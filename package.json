@@ -1,15 +1,20 @@
 {
   "name": "nichijou-loop",
   "version": "0.1.0",
-  "private": true,
   "description": "家庭 AI 管家 — 本地部署，微信交互，插件化生活管理",
   "license": "MIT",
+  "type": "module",
+  "bin": {
+    "nichijou": "./packages/core/dist/cli.js"
+  },
   "scripts": {
     "build": "pnpm -r run build",
     "dev": "pnpm -r --parallel run dev",
     "clean": "pnpm -r run clean",
     "lint": "pnpm -r run lint",
-    "nichijou": "node packages/core/dist/cli.js"
+    "nichijou": "node packages/core/dist/cli.js",
+    "start": "node packages/core/dist/cli.js start",
+    "postinstall": "pnpm build || true"
   },
   "engines": {
     "node": ">=22.0.0",
