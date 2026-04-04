@@ -2,7 +2,7 @@ import { createProvider } from "@nichijou/ai";
 import type { LLMProvider } from "@nichijou/ai";
 import { AgentSession, createAgentSession } from "@nichijou/agent";
 import type { AgentEvent } from "@nichijou/agent";
-import type { FamilyMember, InboundMessage, ToolDefinition } from "@nichijou/shared";
+import type { FamilyMember, InboundMessage, ToolDefinition, Routine } from "@nichijou/shared";
 import type { Channel } from "./gateway/channel.js";
 import type { ChannelStatus } from "@nichijou/shared";
 import { StorageManager } from "./storage/storage.js";
@@ -417,6 +417,84 @@ export class ButlerService {
 
       default:
         return `未知命令: /${cmd}\n输入 /help 查看可用命令。`;
+    }
+  }
+
+  async generateRoutinesFromProfile(memberId: string): Promise<Routine[]> {
+    const profile = this.storage.readMemberProfile(memberId);
+    if (!profile || profile.trim().length === 0) return [];
+
+    const existing = this.routineEngine.getRoutines(memberId);
+    const existingDesc = existing.length > 0
+      ? `\n\n当前已有的周期习惯（避免重复创建）：\n${existing.map((r) => `- ${r.title} (${r.weekdays.map((d) => ["日","一","二","三","四","五","六"][d]).join("、")})`).join("\n")}`
+      : "";
+
+    const systemPrompt = [
+      "你是一个生活习惯分析助手。请根据用户的成员档案描述，提取出可以转化为周期性计划的生活习惯。",
+      "",
+      "输出要求：返回一个 JSON 数组，每个元素为一个习惯对象，格式如下：",
+      "```json",
+      '[{ "title": "习惯名称", "weekdays": [1,3,5], "timeSlot": "morning|afternoon|evening", "time": "18:30", "reminders": [{ "offsetMinutes": 30, "message": "提醒内容", "channel": "wechat" }] }]',
+      "```",
+      "",
+      "字段说明：",
+      "- title: 简短的习惯标题",
+      "- weekdays: 0-6 的数组，0=周日，1=周一...6=周六",
+      "- timeSlot: 可选，morning/afternoon/evening",
+      "- time: 可选，精确时间如 18:30",
+      "- reminders: 可选数组，offsetMinutes 为提前提醒的分钟数，message 为提醒内容，channel 为 wechat/dashboard/both",
+      "",
+      "规则：",
+      "- 只提取明确描述的周期性习惯，不要凭空推测",
+      "- 如果描述模糊（如「经常运动」），可以合理推断但标注 timeSlot 而非精确时间",
+      "- 提醒消息要具体实用（如「记得带健身装备」而非「健身提醒」）",
+      "- 只输出 JSON 数组，不要任何其他文字",
+      existingDesc,
+    ].join("\n");
+
+    try {
+      const provider = this.getProvider();
+      const result = await provider.chat({
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: `以下是成员档案：\n\n${profile}` },
+        ],
+        maxTokens: 2000,
+      });
+
+      const text = result.message.content.trim();
+      const jsonMatch = text.match(/\[[\s\S]*\]/);
+      if (!jsonMatch) return [];
+
+      const parsed = JSON.parse(jsonMatch[0]) as Array<{
+        title: string;
+        weekdays: number[];
+        timeSlot?: string;
+        time?: string;
+        reminders?: Array<{ offsetMinutes: number; message: string; channel: string }>;
+      }>;
+
+      return parsed.map((item) => ({
+        id: "",
+        title: item.title,
+        weekdays: item.weekdays,
+        timeSlot: item.timeSlot as Routine["timeSlot"],
+        time: item.time,
+        reminders: (item.reminders ?? []).map((r) => ({
+          offsetMinutes: r.offsetMinutes,
+          message: r.message,
+          channel: (r.channel as "wechat" | "dashboard" | "both") ?? "wechat",
+        })),
+      }));
+    } catch (err) {
+      console.error("[Butler] 生成周期习惯失败:", err);
+      return [];
+    }
+  }
+
+  applyRoutines(memberId: string, routines: Routine[]): void {
+    for (const routine of routines) {
+      this.routineEngine.setRoutine(memberId, routine);
     }
   }
 
