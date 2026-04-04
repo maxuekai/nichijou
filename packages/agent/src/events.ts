@@ -1,0 +1,27 @@
+import type { LLMProvider } from "@nichijou/ai";
+import type { Message, ToolDefinition } from "@nichijou/shared";
+
+export type AgentEvent =
+  | { type: "text_delta"; delta: string }
+  | { type: "tool_start"; toolName: string; params: unknown }
+  | { type: "tool_end"; toolName: string; result: string; isError: boolean }
+  | { type: "turn_end"; message: Message }
+  | { type: "agent_end" }
+  | { type: "error"; error: Error };
+
+export interface AgentSessionOptions {
+  provider: LLMProvider;
+  systemPrompt: string;
+  tools?: ToolDefinition[];
+  messages?: Message[];
+  maxTurns?: number;
+  temperature?: number;
+  maxTokens?: number;
+  onEvent?: (event: AgentEvent) => void;
+}
+
+export interface SessionState {
+  messages: Message[];
+  systemPrompt: string;
+  tools: ToolDefinition[];
+}

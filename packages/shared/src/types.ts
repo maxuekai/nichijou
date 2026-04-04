@@ -1,0 +1,132 @@
+/** Core message types used across all packages */
+
+export interface Message {
+  role: "system" | "user" | "assistant" | "tool";
+  content: string;
+  name?: string;
+  toolCallId?: string;
+  toolCalls?: ToolCall[];
+}
+
+export interface ToolCall {
+  id: string;
+  type: "function";
+  function: {
+    name: string;
+    arguments: string;
+  };
+}
+
+export interface ToolDefinition {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+  execute: (params: Record<string, unknown>) => Promise<ToolResult>;
+}
+
+export interface ToolResult {
+  content: string;
+  isError?: boolean;
+}
+
+export interface MediaItem {
+  type: "image" | "video" | "file" | "voice";
+  url?: string;
+  path?: string;
+  mimeType?: string;
+  fileName?: string;
+}
+
+/** Family & member types */
+
+export interface Family {
+  id: string;
+  name: string;
+  createdAt: string;
+}
+
+export interface FamilyMember {
+  id: string;
+  familyId: string;
+  name: string;
+  channelBindings: Record<string, string>;
+  primaryChannel: string;
+  role: "admin" | "member";
+}
+
+/** Routine types */
+
+export interface Routine {
+  id: string;
+  title: string;
+  weekdays: number[];
+  timeSlot?: "morning" | "afternoon" | "evening";
+  time?: string;
+  reminders: ReminderRule[];
+  pluginId?: string;
+  pluginConfig?: Record<string, unknown>;
+  since?: string;
+  archived?: boolean;
+}
+
+export interface Override {
+  id: string;
+  date?: string;
+  dateRange?: { start: string; end: string };
+  action: "skip" | "add" | "modify";
+  routineId?: string;
+  title?: string;
+  reason?: string;
+  timeSlot?: string;
+  reminders?: ReminderRule[];
+}
+
+export interface ReminderRule {
+  offsetMinutes: number;
+  message: string;
+  channel: "wechat" | "dashboard" | "both";
+}
+
+export interface DayPlan {
+  date: string;
+  memberId: string;
+  items: DayPlanItem[];
+}
+
+export interface DayPlanItem {
+  id: string;
+  title: string;
+  timeSlot?: string;
+  time?: string;
+  source: "routine" | "override";
+  routineId?: string;
+  reminders: ReminderRule[];
+}
+
+/** Inbound/outbound message types for Gateway */
+
+export interface InboundMessage {
+  channel: string;
+  memberId: string;
+  text: string;
+  media?: MediaItem[];
+  contextToken?: string;
+  timestamp?: number;
+}
+
+export interface OutboundMessage {
+  memberId: string;
+  text: string;
+  media?: MediaItem[];
+}
+
+/** Channel status */
+
+export interface ChannelStatus {
+  connected: boolean;
+  totalMembers?: number;
+  connectedMembers?: number;
+  expiredMembers?: string[];
+  onlineSince?: string;
+  lastError?: string;
+}

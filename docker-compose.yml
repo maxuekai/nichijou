@@ -1,0 +1,12 @@
+services:
+  nichijou:
+    build: .
+    ports:
+      - "3000:3000"
+    volumes:
+      - nichijou-data:/root/.nichijou
+    env_file: .env
+    restart: unless-stopped
+
+volumes:
+  nichijou-data:

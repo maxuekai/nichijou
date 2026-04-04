@@ -1,0 +1,427 @@
+import { createProvider } from "@nichijou/ai";
+import type { LLMProvider } from "@nichijou/ai";
+import { AgentSession, createAgentSession } from "@nichijou/agent";
+import type { AgentEvent } from "@nichijou/agent";
+import type { FamilyMember, InboundMessage, ToolDefinition } from "@nichijou/shared";
+import type { Channel } from "./gateway/channel.js";
+import type { ChannelStatus } from "@nichijou/shared";
+import { StorageManager } from "./storage/storage.js";
+import { ConfigManager } from "./storage/config.js";
+import { Database } from "./db/database.js";
+import { FamilyManager } from "./family/family-manager.js";
+import { RoutineEngine } from "./routine/routine-engine.js";
+import { Gateway } from "./gateway/gateway.js";
+import { createFamilyTools } from "./tools/family-tools.js";
+import { createRoutineTools } from "./tools/routine-tools.js";
+import { createMemoryTools } from "./tools/memory-tools.js";
+import { createReminderTools } from "./tools/reminder-tools.js";
+
+interface WeChatConnection {
+  connectionId: string;
+  memberId: string | null;
+  wechatUserId: string;
+  status: string;
+  connectedAt?: string;
+  lastError?: string;
+}
+
+interface WeChatChannelLike extends Channel {
+  startPairing(): Promise<{ qrUrl: string; connectionId: string }>;
+  getPairingStatus(): { active: boolean; connectionId?: string; qrUrl?: string };
+  cancelPairing(): void;
+  bindMember(connectionId: string, memberId: string): void;
+  removeConnection(connectionId: string): void;
+  isMemberBound(memberId: string): boolean;
+  getConnections(): WeChatConnection[];
+  getStatus(): ChannelStatus;
+}
+
+export class ButlerService {
+  readonly storage: StorageManager;
+  readonly config: ConfigManager;
+  readonly db: Database;
+  readonly familyManager: FamilyManager;
+  readonly routineEngine: RoutineEngine;
+  readonly gateway: Gateway;
+
+  private provider: LLMProvider | null = null;
+  private sessions = new Map<string, AgentSession>();
+  private _wechatChannel: WeChatChannelLike | null = null;
+
+  constructor(dataDir?: string) {
+    this.storage = new StorageManager(dataDir);
+    this.config = new ConfigManager(this.storage);
+    this.db = new Database(this.storage);
+    this.familyManager = new FamilyManager(this.storage);
+    this.routineEngine = new RoutineEngine(this.storage);
+    this.gateway = new Gateway(this.familyManager);
+
+    this.gateway.onMessage(this.handleMessage.bind(this));
+    this.gateway.onUnboundMessage(this.handleUnboundMessage.bind(this));
+  }
+
+  async initWeChatChannel(): Promise<void> {
+    try {
+      const modName = "@nichijou/channel-wechat";
+      const mod = await import(/* webpackIgnore: true */ modName) as {
+        WeChatChannel: new (storage: StorageManager) => WeChatChannelLike;
+      };
+      const channel = new mod.WeChatChannel(this.storage) as WeChatChannelLike;
+      this.gateway.registerChannel(channel);
+      await channel.start(this.gateway);
+      this._wechatChannel = channel;
+      console.log("[WeChat] 通道已初始化");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[WeChat] 通道初始化失败: ${msg}`);
+    }
+  }
+
+  getWeChatChannel(): WeChatChannelLike | null {
+    return this._wechatChannel;
+  }
+
+  getProvider(): LLMProvider {
+    if (!this.provider) {
+      const cfg = this.config.get();
+      this.provider = createProvider(cfg.llm);
+    }
+    return this.provider;
+  }
+
+  refreshProvider(): void {
+    this.provider = null;
+    this.sessions.clear();
+  }
+
+  private buildTools(): ToolDefinition[] {
+    return [
+      ...createFamilyTools(this.familyManager, this.storage),
+      ...createRoutineTools(this.routineEngine, this.familyManager),
+      ...createMemoryTools(this.storage),
+      ...createReminderTools(this.gateway),
+    ];
+  }
+
+  private buildSystemPrompt(member?: FamilyMember, isOnboarding = false): string {
+    const soul = this.storage.readSoul();
+    let prompt = soul + "\n\n---\n\n";
+
+    if (member) {
+      const profile = this.storage.readMemberProfile(member.id);
+      if (profile) {
+        prompt += `# 当前对话成员\n\n${profile}\n\n---\n\n`;
+      }
+      const today = new Date();
+      const plan = this.routineEngine.resolveDayPlan(member.id, today);
+      if (plan.items.length > 0) {
+        prompt += `# 今日计划\n\n`;
+        for (const item of plan.items) {
+          prompt += `- ${item.timeSlot ?? ""} ${item.title}\n`;
+        }
+        prompt += "\n---\n\n";
+      }
+    }
+
+    prompt += `# 功能说明\n\n你有以下工具可以使用来帮助家庭成员管理生活。请根据对话自然地调用工具。\n`;
+    prompt += `\n当前成员 ID：${member?.id ?? "未知"}\n`;
+
+    prompt += `\n# 回复规则\n\n`;
+    prompt += `- 回复时只输出最终结论和对用户有用的信息\n`;
+    prompt += `- 不要输出思考过程、工具调用的中间步骤\n`;
+    prompt += `- 保持简洁、自然、温暖的语气\n`;
+
+    if (isOnboarding) {
+      prompt += `\n# 新成员引导\n\n`;
+      prompt += `这是一位刚刚加入家庭的新成员。请：\n`;
+      prompt += `1. 热情欢迎，简要介绍你作为家庭管家能做什么（周期计划、健身提醒、行程规划、买菜推荐、做饭菜单、定时提醒等）\n`;
+      prompt += `2. 引导他/她告诉你日常生活习惯（比如几点起床、是否健身、周末安排等）\n`;
+      prompt += `3. 鼓励他/她随时可以补充和调整\n`;
+      prompt += `4. 语气亲切自然，像一个贴心的家人\n`;
+    }
+
+    return prompt;
+  }
+
+  getOrCreateSession(memberId: string, isOnboarding = false): AgentSession {
+    if (!isOnboarding) {
+      const existing = this.sessions.get(memberId);
+      if (existing) return existing;
+    }
+
+    const member = this.familyManager.getMember(memberId);
+    const systemPrompt = this.buildSystemPrompt(member ?? undefined, isOnboarding);
+
+    const session = createAgentSession({
+      provider: this.getProvider(),
+      systemPrompt,
+      tools: this.buildTools(),
+    });
+
+    this.sessions.set(memberId, session);
+    return session;
+  }
+
+  /**
+   * Chat with logging. Returns the FULL response (for dashboard use).
+   * For WeChat, use handleMessage which extracts only the final reply.
+   */
+  async chat(memberId: string, input: string, onEvent?: (event: AgentEvent) => void): Promise<string> {
+    const session = this.getOrCreateSession(memberId);
+    if (onEvent) {
+      session.subscribe(onEvent);
+    }
+    const response = await session.prompt(input);
+
+    this.db.saveChat(memberId, "user", input);
+    this.db.saveChat(memberId, "assistant", response);
+
+    return response;
+  }
+
+  /**
+   * Handle an inbound WeChat/channel message.
+   * Collects all events, logs them, and sends only the clean final reply.
+   */
+  private async handleMessage(member: FamilyMember, msg: InboundMessage): Promise<void> {
+    // Slash commands (admin only)
+    if (msg.text.startsWith("/")) {
+      const reply = await this.handleSlashCommand(member, msg.text);
+      await this.gateway.sendToMember(member.id, reply);
+      return;
+    }
+
+    const session = this.getOrCreateSession(member.id);
+    const events: Array<{ type: string; data: unknown }> = [];
+    let lastTurnText = "";
+
+    const unsubscribe = session.subscribe((event) => {
+      events.push({ type: event.type, data: event });
+      if (event.type === "turn_end" && "message" in event && event.message.content) {
+        lastTurnText = event.message.content;
+      }
+    });
+
+    try {
+      await session.prompt(msg.text);
+    } finally {
+      unsubscribe();
+    }
+
+    const reply = lastTurnText || "（无回复）";
+
+    // Save full conversation log
+    this.db.saveConversationLog(
+      member.id,
+      msg.text,
+      reply,
+      JSON.stringify(events),
+    );
+    this.db.saveChat(member.id, "user", msg.text);
+    this.db.saveChat(member.id, "assistant", reply);
+
+    await this.gateway.sendToMember(member.id, reply);
+  }
+
+  /**
+   * Handle a message from an unbound WeChat connection.
+   * Guides the user through creating or selecting a member to bind.
+   */
+  private async handleUnboundMessage(
+    _channelId: string,
+    connectionId: string,
+    text: string,
+    send: (reply: string) => Promise<void>,
+  ): Promise<void> {
+    const trimmed = text.trim();
+    const members = this.familyManager.getMembers();
+
+    const membersList = members.length > 0
+      ? members.map((m) => `  - ${m.name}`).join("\n")
+      : "  （暂无成员）";
+
+    // Try to match existing member by name
+    const existingMember = members.find(
+      (m) => m.name === trimmed || m.name.toLowerCase() === trimmed.toLowerCase(),
+    );
+
+    if (existingMember) {
+      // Check duplicate binding
+      const ch = this._wechatChannel;
+      if (ch?.isMemberBound(existingMember.id)) {
+        await send(
+          `「${existingMember.name}」已经绑定了微信，不能重复绑定。\n\n` +
+          `请输入一个新的名字来创建账号，或选择其他未绑定的成员。\n\n当前家庭成员：\n${membersList}`,
+        );
+        return;
+      }
+
+      // Bind to existing member
+      if (ch) {
+        ch.bindMember(connectionId, existingMember.id);
+        this.familyManager.bindChannel(existingMember.id, "wechat", connectionId);
+      }
+
+      await send(`已绑定到「${existingMember.name}」！现在你可以直接和管家对话了。`);
+
+      // Trigger a short intro (not full onboarding since they're existing)
+      setTimeout(async () => {
+        try {
+          const session = this.getOrCreateSession(existingMember.id);
+          const events: Array<{ type: string; data: unknown }> = [];
+          let lastText = "";
+          const unsub = session.subscribe((e) => {
+            events.push({ type: e.type, data: e });
+            if (e.type === "turn_end" && "message" in e && e.message.content) {
+              lastText = e.message.content;
+            }
+          });
+          try {
+            await session.prompt("你好，我刚通过微信连接上了，简单提醒我今天有什么安排吧。");
+          } finally {
+            unsub();
+          }
+          if (lastText) {
+            await this.gateway.sendToMember(existingMember.id, lastText);
+          }
+        } catch { /* ignore */ }
+      }, 1000);
+      return;
+    }
+
+    // No match: create new member
+    if (trimmed.length < 1 || trimmed.length > 20) {
+      await send(
+        `你好！欢迎使用家庭管家 ✨\n\n` +
+        `请输入你的名字来创建账号（1-20个字符），或输入已有成员的名字进行绑定。\n\n` +
+        `当前家庭成员：\n${membersList}`,
+      );
+      return;
+    }
+
+    // Create new member
+    const newMember = this.familyManager.addMember(trimmed);
+    const ch = this._wechatChannel;
+    if (ch) {
+      ch.bindMember(connectionId, newMember.id);
+      this.familyManager.bindChannel(newMember.id, "wechat", connectionId);
+    }
+
+    await send(`已为你创建账号「${trimmed}」并绑定成功！`);
+
+    // Trigger onboarding flow
+    setTimeout(async () => {
+      try {
+        const session = this.getOrCreateSession(newMember.id, true);
+        const events: Array<{ type: string; data: unknown }> = [];
+        let lastText = "";
+        const unsub = session.subscribe((e) => {
+          events.push({ type: e.type, data: e });
+          if (e.type === "turn_end" && "message" in e && e.message.content) {
+            lastText = e.message.content;
+          }
+        });
+        try {
+          await session.prompt("你好，我是新加入的成员，请介绍一下你能帮我做什么。");
+        } finally {
+          unsub();
+        }
+        if (lastText) {
+          this.db.saveConversationLog(newMember.id, "[新成员引导]", lastText, JSON.stringify(events));
+          await this.gateway.sendToMember(newMember.id, lastText);
+        }
+      } catch (err) {
+        console.error("[Onboarding] 引导消息发送失败:", err);
+      }
+    }, 1500);
+  }
+
+  /**
+   * Handle slash commands. Returns the response text.
+   */
+  private async handleSlashCommand(member: FamilyMember, text: string): Promise<string> {
+    if (member.role !== "admin") {
+      return "只有管理员可以使用 / 命令。";
+    }
+
+    const [cmd, ...args] = text.slice(1).split(/\s+/);
+
+    switch (cmd) {
+      case "help":
+        return [
+          "可用命令：",
+          "  /help     - 显示此帮助",
+          "  /status   - 系统状态",
+          "  /members  - 成员列表",
+          "  /plan     - 今日计划",
+          "  /plan @名字 - 查看指定成员的计划",
+          "  /usage    - Token 用量",
+          "  /wechat   - 微信连接状态",
+        ].join("\n");
+
+      case "status": {
+        const cfg = this.config.get();
+        const wechatStatus = this._wechatChannel?.getStatus();
+        const usage = this.db.getTokenUsage(new Date().toISOString().slice(0, 10));
+        return [
+          "📊 系统状态",
+          `LLM: ${cfg.llm.model} @ ${cfg.llm.baseUrl}`,
+          `微信: ${wechatStatus?.connected ? "已连接" : "未连接"} (${wechatStatus?.connectedMembers ?? 0}人在线)`,
+          `今日 Token: prompt=${usage.promptTokens} completion=${usage.completionTokens}`,
+        ].join("\n");
+      }
+
+      case "members": {
+        const members = this.familyManager.getMembers();
+        if (members.length === 0) return "暂无成员";
+        return "👥 家庭成员：\n" + members.map((m) => {
+          const bound = this._wechatChannel?.isMemberBound(m.id) ? " 📱" : "";
+          return `  ${m.name} (${m.role})${bound}`;
+        }).join("\n");
+      }
+
+      case "plan": {
+        const targetName = args.join(" ").replace("@", "").trim();
+        let targetMember = member;
+        if (targetName) {
+          const found = this.familyManager.getMembers().find((m) => m.name === targetName);
+          if (!found) return `未找到成员「${targetName}」`;
+          targetMember = found;
+        }
+        const plan = this.routineEngine.resolveDayPlan(targetMember.id, new Date());
+        if (plan.items.length === 0) return `${targetMember.name} 今日无计划`;
+        return `📅 ${targetMember.name} 今日计划：\n` + plan.items.map((it) =>
+          `  ${it.timeSlot ?? ""} ${it.title}`,
+        ).join("\n");
+      }
+
+      case "usage": {
+        const today = new Date().toISOString().slice(0, 10);
+        const usage = this.db.getTokenUsage(today);
+        return `📈 今日 Token 用量：\n  Prompt: ${usage.promptTokens}\n  Completion: ${usage.completionTokens}`;
+      }
+
+      case "wechat": {
+        const ch = this._wechatChannel;
+        if (!ch) return "微信通道未初始化";
+        const conns = ch.getConnections();
+        if (conns.length === 0) return "暂无微信连接";
+        const members = this.familyManager.getMembers();
+        return "📱 微信连接：\n" + conns.map((c) => {
+          const m = c.memberId ? members.find((mem) => mem.id === c.memberId) : null;
+          const name = m ? m.name : "未绑定";
+          const dot = c.status === "connected" ? "🟢" : c.status === "expired" ? "🔴" : "⚪";
+          return `  ${dot} ${name} - ${c.status}`;
+        }).join("\n");
+      }
+
+      default:
+        return `未知命令: /${cmd}\n输入 /help 查看可用命令。`;
+    }
+  }
+
+  async shutdown(): Promise<void> {
+    await this.gateway.stopAll();
+    this.db.close();
+  }
+}
