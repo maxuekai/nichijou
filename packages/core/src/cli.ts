@@ -5,6 +5,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "
 import { join } from "node:path";
 import { homedir } from "node:os";
 import * as readline from "node:readline";
+import yaml from "js-yaml";
 
 const DATA_DIR = join(homedir(), ".nichijou");
 const PID_FILE = join(DATA_DIR, "nichijou.pid");
@@ -43,6 +44,24 @@ function loadDotEnv(): void {
 }
 
 loadDotEnv();
+
+/** 与 serve() 一致：--port > PORT 环境变量 > config.yaml > 3000 */
+function getDefaultPortFromConfig(): number {
+  const configPath = join(DATA_DIR, "config.yaml");
+  if (!existsSync(configPath)) return 3000;
+  try {
+    const content = readFileSync(configPath, "utf-8");
+    const parsed = yaml.load(content) as { port?: number } | undefined;
+    if (typeof parsed?.port === "number" && !Number.isNaN(parsed.port)) return parsed.port;
+  } catch { /* ignore */ }
+  return 3000;
+}
+
+function resolveEffectivePortForDisplay(cliPortArg?: string): string {
+  if (cliPortArg) return cliPortArg;
+  if (process.env.PORT) return process.env.PORT;
+  return String(getDefaultPortFromConfig());
+}
 
 const args = process.argv.slice(2);
 const command = args[0] ?? "help";
@@ -157,11 +176,11 @@ async function cmdStart(): Promise<void> {
   }
 
   const portIdx = args.indexOf("--port");
-  const port = portIdx >= 0 && args[portIdx + 1] ? args[portIdx + 1] : undefined;
+  const cliPort = portIdx >= 0 && args[portIdx + 1] ? args[portIdx + 1] : undefined;
 
   const serverScript = getServerScriptPath();
   const env = { ...process.env };
-  if (port) env.PORT = port;
+  if (cliPort) env.PORT = cliPort;
 
   const out = (await import("node:fs")).openSync(LOG_FILE, "a");
   const err = (await import("node:fs")).openSync(ERR_FILE, "a");
@@ -176,8 +195,9 @@ async function cmdStart(): Promise<void> {
 
   if (child.pid) {
     writePid(child.pid);
+    const displayPort = resolveEffectivePortForDisplay(cliPort);
     console.log(`🏠 管家已后台启动 (PID: ${child.pid})`);
-    console.log(`   端口: ${port ?? "3000"}`);
+    console.log(`   端口: ${displayPort}`);
     console.log(`   日志: ${LOG_FILE}`);
     console.log(`   停止: nichijou stop`);
   } else {
@@ -232,6 +252,7 @@ function cmdStatus(): void {
 
   console.log(`管家状态: 运行中`);
   console.log(`  PID: ${pid}`);
+  console.log(`  端口: ${resolveEffectivePortForDisplay()}`);
   console.log(`  PID 文件: ${PID_FILE}`);
   console.log(`  日志: ${LOG_FILE}`);
 
@@ -281,7 +302,11 @@ async function cmdDev(): Promise<void> {
   const config = butler.config.get();
 
   const portIdx = args.indexOf("--port");
-  const port = portIdx >= 0 && args[portIdx + 1] ? parseInt(args[portIdx + 1]!, 10) : config.port;
+  const port = portIdx >= 0 && args[portIdx + 1]
+    ? parseInt(args[portIdx + 1]!, 10)
+    : process.env.PORT
+      ? parseInt(process.env.PORT, 10)
+      : config.port;
 
   let family = butler.familyManager.getFamily();
   if (!family) {
