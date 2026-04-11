@@ -37,6 +37,12 @@ interface FamilyPlan {
   reason?: string;
 }
 
+function asText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value == null) return "";
+  return String(value);
+}
+
 export function FamilyPage() {
   const [family, setFamily] = useState<{ id: string; name: string; avatar?: string } | null>(null);
   const [members, setMembers] = useState<Array<{ id: string; name: string }>>([]);
@@ -91,7 +97,7 @@ export function FamilyPage() {
   }
 
   function parseAssigneesFromText(input?: string): string[] {
-    const text = (input ?? "").trim().replace(/，/g, ",");
+    const text = asText(input).trim().replace(/，/g, ",");
     if (!text || text.includes("@all")) return members.map((m) => m.id);
     const names = text.match(/@([^\s,]+)/g)?.map((token) => token.slice(1)) ?? [];
     const ids = members.filter((m) => names.includes(m.name) || names.includes(m.id)).map((m) => m.id);
@@ -136,12 +142,13 @@ export function FamilyPage() {
   }
 
   async function parseRoutineWithAI() {
-    if (!editingRoutine?.description?.trim() || routineParsing || members.length === 0) return;
+    const description = asText(editingRoutine?.description);
+    if (!description.trim() || routineParsing || members.length === 0) return;
     setRoutineParsing(true);
     setAiWarnings([]);
     setParseError(null);
     try {
-      const res = await api.parseRoutine(members[0]!.id, editingRoutine.description.trim());
+      const res = await api.parseRoutine(members[0]!.id, description.trim());
       if (!res.ok || !res.routine) {
         setParseError(res.error ?? "AI 解析失败");
         return;
@@ -150,8 +157,8 @@ export function FamilyPage() {
       setEditingRoutine({
         ...parsed,
         id: editingRoutine.id,
-        description: editingRoutine.description,
-        assigneeMemberIds: parseAssigneesFromText(editingRoutine.description),
+        description: description,
+        assigneeMemberIds: parseAssigneesFromText(description),
       });
       setAiWarnings(res.warnings ?? []);
     } catch (err) {
@@ -162,12 +169,13 @@ export function FamilyPage() {
   }
 
   async function parsePlanWithAI() {
-    if (!editingPlan?.description?.trim() || planParsing || members.length === 0) return;
+    const description = asText(editingPlan?.description);
+    if (!description.trim() || planParsing || members.length === 0) return;
     setPlanParsing(true);
     setAiWarnings([]);
     setParseError(null);
     try {
-      const res = await api.parsePlan(members[0]!.id, editingPlan.description.trim());
+      const res = await api.parsePlan(members[0]!.id, description.trim());
       if (!res.ok || !res.plan) {
         setParseError(res.error ?? "AI 解析失败");
         return;
@@ -176,8 +184,8 @@ export function FamilyPage() {
       setEditingPlan({
         ...parsed,
         id: editingPlan.id,
-        description: editingPlan.description,
-        assigneeMemberIds: parseAssigneesFromText(editingPlan.description),
+        description,
+        assigneeMemberIds: parseAssigneesFromText(description),
       });
       setAiWarnings(res.warnings ?? []);
     } catch (err) {
@@ -269,7 +277,7 @@ export function FamilyPage() {
                 <p className="text-xs text-stone-500 mt-0.5">{formatAssignees(r.assigneeMemberIds)} · {r.weekdays.map((d) => `周${WEEKDAY_NAMES[d]}`).join("、")}{r.time ? ` · ${r.time}` : ""}</p>
               </div>
               <div className="flex gap-1">
-                <button onClick={() => { setParseError(null); setAiWarnings([]); setEditingRoutine({ ...r, description: r.description ?? `${r.title} ${formatAssignees(r.assigneeMemberIds)}` }); }} className="px-2 py-1 text-xs rounded border border-stone-300 text-stone-600 hover:bg-stone-100">编辑</button>
+                <button onClick={() => { setParseError(null); setAiWarnings([]); setEditingRoutine({ ...r, description: asText(r.description) || `${r.title} ${formatAssignees(r.assigneeMemberIds)}` }); }} className="px-2 py-1 text-xs rounded border border-stone-300 text-stone-600 hover:bg-stone-100">编辑</button>
                 <button onClick={async () => {
                   try {
                     setPageError(null);
@@ -303,7 +311,7 @@ export function FamilyPage() {
                 <p className="text-xs text-stone-500 mt-0.5">{formatAssignees(p.assigneeMemberIds)} · {p.action}{p.date ? ` · ${p.date}` : ""}{p.startTime ? ` · ${p.startTime}` : ""}{p.endTime ? `-${p.endTime}` : ""}</p>
               </div>
               <div className="flex gap-1">
-                <button onClick={() => { setParseError(null); setAiWarnings([]); setEditingPlan({ ...p, description: p.description ?? `${p.title ?? "家庭计划"} ${formatAssignees(p.assigneeMemberIds)}` }); }} className="px-2 py-1 text-xs rounded border border-stone-300 text-stone-600 hover:bg-stone-100">编辑</button>
+                <button onClick={() => { setParseError(null); setAiWarnings([]); setEditingPlan({ ...p, description: asText(p.description) || `${p.title ?? "家庭计划"} ${formatAssignees(p.assigneeMemberIds)}` }); }} className="px-2 py-1 text-xs rounded border border-stone-300 text-stone-600 hover:bg-stone-100">编辑</button>
                 <button onClick={async () => {
                   try {
                     setPageError(null);
@@ -326,7 +334,7 @@ export function FamilyPage() {
             <h3 className="text-lg font-semibold text-stone-800 mb-3">家庭习惯（自然语言）</h3>
             <div className="relative">
               <textarea
-                value={editingRoutine.description ?? ""}
+                value={asText(editingRoutine.description)}
                 onChange={(e) => {
                   const text = e.target.value;
                   setEditingRoutine({ ...editingRoutine, description: text, assigneeMemberIds: parseAssigneesFromText(text) });
@@ -347,7 +355,7 @@ export function FamilyPage() {
             </div>
             <div className="flex items-center justify-between mt-2">
               <p className="text-[11px] text-stone-400">仅需输入描述；@ 分配也在描述中完成</p>
-              <button onClick={parseRoutineWithAI} disabled={!editingRoutine.description?.trim() || routineParsing} className="px-3 py-1.5 rounded-lg bg-amber-500 text-white text-xs font-medium hover:bg-amber-600 disabled:opacity-50">{routineParsing ? "AI 解析中…" : "AI 解析"}</button>
+              <button onClick={parseRoutineWithAI} disabled={!asText(editingRoutine.description).trim() || routineParsing} className="px-3 py-1.5 rounded-lg bg-amber-500 text-white text-xs font-medium hover:bg-amber-600 disabled:opacity-50">{routineParsing ? "AI 解析中…" : "AI 解析"}</button>
             </div>
             {parseError && <p className="text-xs text-red-500 mt-1">{parseError}</p>}
             {aiWarnings.length > 0 && <div className="mt-2 p-2 rounded bg-yellow-50 border border-yellow-200">{aiWarnings.map((w, i) => <p key={i} className="text-xs text-yellow-700">{w}</p>)}</div>}
@@ -363,7 +371,7 @@ export function FamilyPage() {
               <button onClick={async () => {
                 try {
                   setPageError(null);
-                  await api.upsertFamilyRoutine(editingRoutine.id, { ...editingRoutine, assigneeMemberIds: parseAssigneesFromText(editingRoutine.description) });
+                  await api.upsertFamilyRoutine(editingRoutine.id, { ...editingRoutine, assigneeMemberIds: parseAssigneesFromText(asText(editingRoutine.description)) });
                   setEditingRoutine(null);
                   await loadData();
                 } catch (err) {
@@ -381,7 +389,7 @@ export function FamilyPage() {
             <h3 className="text-lg font-semibold text-stone-800 mb-3">家庭计划（自然语言）</h3>
             <div className="relative">
               <textarea
-                value={editingPlan.description ?? ""}
+                value={asText(editingPlan.description)}
                 onChange={(e) => {
                   const text = e.target.value;
                   setEditingPlan({ ...editingPlan, description: text, assigneeMemberIds: parseAssigneesFromText(text) });
@@ -402,7 +410,7 @@ export function FamilyPage() {
             </div>
             <div className="flex items-center justify-between mt-2">
               <p className="text-[11px] text-stone-400">仅需输入描述；AI 会生成计划类型、日期与时间段</p>
-              <button onClick={parsePlanWithAI} disabled={!editingPlan.description?.trim() || planParsing} className="px-3 py-1.5 rounded-lg bg-amber-500 text-white text-xs font-medium hover:bg-amber-600 disabled:opacity-50">{planParsing ? "AI 解析中…" : "AI 解析"}</button>
+              <button onClick={parsePlanWithAI} disabled={!asText(editingPlan.description).trim() || planParsing} className="px-3 py-1.5 rounded-lg bg-amber-500 text-white text-xs font-medium hover:bg-amber-600 disabled:opacity-50">{planParsing ? "AI 解析中…" : "AI 解析"}</button>
             </div>
             {parseError && <p className="text-xs text-red-500 mt-1">{parseError}</p>}
             {aiWarnings.length > 0 && <div className="mt-2 p-2 rounded bg-yellow-50 border border-yellow-200">{aiWarnings.map((w, i) => <p key={i} className="text-xs text-yellow-700">{w}</p>)}</div>}
@@ -417,7 +425,7 @@ export function FamilyPage() {
               <button onClick={async () => {
                 try {
                   setPageError(null);
-                  await api.upsertFamilyPlan(editingPlan.id, { ...editingPlan, assigneeMemberIds: parseAssigneesFromText(editingPlan.description) });
+                  await api.upsertFamilyPlan(editingPlan.id, { ...editingPlan, assigneeMemberIds: parseAssigneesFromText(asText(editingPlan.description)) });
                   setEditingPlan(null);
                   await loadData();
                 } catch (err) {

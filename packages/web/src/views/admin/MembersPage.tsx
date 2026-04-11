@@ -62,6 +62,12 @@ interface MemberDetail {
   dayPlan: { date: string; items: DayPlanItem[] };
 }
 
+function asText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value == null) return "";
+  return String(value);
+}
+
 export function MembersPage() {
   const navigate = useNavigate();
   const [members, setMembers] = useState<Array<{ id: string; name: string; role: string; avatar?: string }>>([]);
@@ -305,7 +311,7 @@ export function MembersPage() {
   }
 
   async function parseWithAi(descOverride?: string) {
-    const desc = descOverride ?? aiDescription;
+    const desc = asText(descOverride ?? aiDescription);
     if (!selectedId || !desc.trim() || aiParsing) return;
     setAiParsing(true);
     setAiError(null);
@@ -319,6 +325,8 @@ export function MembersPage() {
           return {
             ...r,
             id: prev.id,
+            title: asText(r.title || prev.title),
+            weekdays: Array.isArray(r.weekdays) ? r.weekdays : prev.weekdays,
             description: desc.trim(),
           };
         });
@@ -601,7 +609,7 @@ export function MembersPage() {
                         </button>
                         <button
                           onClick={parseWithAi}
-                          disabled={!aiDescription.trim() || aiParsing}
+                    disabled={!asText(aiDescription).trim() || aiParsing}
                           className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-amber-500 text-white text-sm font-medium hover:bg-amber-600 disabled:opacity-50 transition-colors"
                         >
                           {aiParsing ? (
@@ -677,7 +685,11 @@ export function MembersPage() {
                                       message: rem.message,
                                     }));
                                   }
-                                  setEditingRoutine(r);
+                                  setEditingRoutine({
+                                    ...r,
+                                    title: asText(r.title),
+                                    description: asText(r.description),
+                                  });
                                 }}
                                 className="p-1.5 rounded-md text-stone-400 hover:text-amber-600 hover:bg-amber-50 transition-colors cursor-pointer"
                                 title="编辑"
@@ -1185,11 +1197,11 @@ export function MembersPage() {
               <div>
                 <label className="block text-xs font-medium text-stone-500 mb-1">习惯描述</label>
                 <textarea
-                  value={editingRoutine.description ?? ""}
+                  value={asText(editingRoutine.description)}
                   onChange={(e) => setEditingRoutine({ ...editingRoutine, description: e.target.value })}
                   onKeyDown={(e) => {
-                    if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && editingRoutine.description?.trim()) {
-                      parseWithAi(editingRoutine.description);
+                    if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && asText(editingRoutine.description).trim()) {
+                      parseWithAi(asText(editingRoutine.description));
                     }
                   }}
                   placeholder={"用自然语言描述这个习惯，AI 会自动识别执行方式\n例如：告诉我明天的天气预报、提前半小时提醒带健身装备"}
@@ -1200,8 +1212,8 @@ export function MembersPage() {
                 <div className="flex items-center justify-between mt-2">
                   <p className="text-[11px] text-stone-400">Cmd+Enter 快速解析</p>
                   <button
-                    onClick={() => editingRoutine.description && parseWithAi(editingRoutine.description)}
-                    disabled={!editingRoutine.description?.trim() || aiParsing}
+                    onClick={() => parseWithAi(asText(editingRoutine.description))}
+                    disabled={!asText(editingRoutine.description).trim() || aiParsing}
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500 text-white text-xs font-medium hover:bg-amber-600 disabled:opacity-50 transition-colors"
                   >
                     {aiParsing ? (
