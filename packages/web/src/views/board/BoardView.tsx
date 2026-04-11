@@ -40,6 +40,18 @@ interface BoardMember {
   dayPlan: { date: string; memberId: string; items: PlanItem[] };
 }
 
+interface BoardNotification {
+  id: number;
+  memberId: string;
+  memberName: string;
+  routineId: string;
+  routineTitle: string;
+  actionId: string;
+  result: string;
+  success: boolean;
+  executedAt: string;
+}
+
 interface WeatherData {
   temp: number | null;
   tempMax: number | null;
@@ -158,6 +170,7 @@ function formatDateShort(d: Date): string {
 export function BoardView() {
   const [now, setNow] = useState(new Date());
   const [members, setMembers] = useState<BoardMember[]>([]);
+  const [notifications, setNotifications] = useState<BoardNotification[]>([]);
   const [familyName, setFamilyName] = useState("");
   const [soul, setSoul] = useState("");
   const [weather, setWeather] = useState<WeatherData | null>(null);
@@ -199,6 +212,7 @@ export function BoardView() {
       setFamilyName(data.family?.name ?? "");
       setMembers(data.members);
       setSoul(data.soul);
+      setNotifications(data.notifications ?? []);
     } catch { /* ignore */ }
   }
 
@@ -536,6 +550,37 @@ export function BoardView() {
                 </div>
               ) : (
                 <p className="text-sm text-[#3a3530] text-center py-4">暂无提醒</p>
+              )}
+            </div>
+
+            {/* Recent Notifications */}
+            <div>
+              <p className="text-xs text-[#5a5448] tracking-[0.2em] mb-3">最近通知</p>
+              {notifications.length > 0 ? (
+                <div className="space-y-2">
+                  {notifications.slice(0, 8).map((n) => (
+                    <div key={n.id} className="bg-[#231f1c] rounded-lg p-3.5 border border-[#2e2a26]">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-xs text-[#8a7e6d]">{n.memberName} · {n.routineTitle}</span>
+                        <span className="text-[11px] text-[#6a6054]">
+                          {new Date(n.executedAt).toLocaleString("zh-CN", {
+                            month: "numeric",
+                            day: "numeric",
+                            hour: "2-digit",
+                            minute: "2-digit",
+                            hour12: false,
+                          })}
+                        </span>
+                      </div>
+                      <p className="text-sm text-[#c8b89a] line-clamp-2">{n.result || "已执行"}</p>
+                      <p className={`text-[11px] mt-1 ${n.success ? "text-[#6aaa6a]" : "text-[#aa6a6a]"}`}>
+                        {n.success ? "执行成功" : "执行失败"}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-[#3a3530] text-center py-4">暂无通知</p>
               )}
             </div>
           </div>

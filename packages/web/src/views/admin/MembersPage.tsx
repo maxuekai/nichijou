@@ -116,6 +116,8 @@ export function MembersPage() {
   async function selectMember(id: string) {
     setSelectedId(id);
     setTab("plan");
+    setLogsExpanded(false);
+    setActionLogs([]);
     await refreshMemberDetail(id);
   }
 
@@ -206,7 +208,7 @@ export function MembersPage() {
         });
       }
       setGeneratedRoutines(null);
-      selectMember(selectedId);
+      await refreshMemberDetail(selectedId);
     } catch { /* ignore */ }
     setApplyingGen(false);
   }
@@ -243,7 +245,14 @@ export function MembersPage() {
       const res = await api.parseRoutine(selectedId, desc.trim());
       if (res.ok && res.routine) {
         const r = res.routine as unknown as Routine;
-        setEditingRoutine(r);
+        setEditingRoutine((prev) => {
+          if (!prev) return r;
+          return {
+            ...r,
+            id: prev.id,
+            description: desc.trim(),
+          };
+        });
         setAiWarnings(res.warnings ?? []);
         setShowAiInput(false);
         setAiDescription("");
@@ -264,13 +273,20 @@ export function MembersPage() {
     } catch { /* ignore */ }
   }
 
+  useEffect(() => {
+    setActionLogs([]);
+    if (logsExpanded && selectedId) {
+      void loadActionLogs();
+    }
+  }, [selectedId]);
+
   function formatActionChain(actions: RoutineAction[]): string[] {
     return actions.map((a) => {
       const trigLabels: Record<string, string> = { before: "提前", at: "到时", after: "延后" };
       const trigStr = a.trigger === "at" ? "到时" : `${trigLabels[a.trigger]}${a.offsetMinutes}分`;
       switch (a.type) {
         case "notify":
-          return `${trigStr} → 微信+面板通知：「${a.message ?? ""}」`;
+          return `${trigStr} → 微信通知：「${a.message ?? ""}」`;
         case "ai_task":
           return `${trigStr} → AI 执行任务：${a.prompt ?? ""}`;
         case "plugin":
@@ -1085,7 +1101,7 @@ export function MembersPage() {
                       );
                     })}
                   </div>
-                  <p className="text-[11px] text-stone-400 mt-1.5">所有通知统一发送到微信和面板</p>
+                  <p className="text-[11px] text-stone-400 mt-1.5">通知会发送到微信，执行结果可在下方“最近执行记录”查看</p>
                 </div>
               )}
             </div>

@@ -332,6 +332,28 @@ export class Database {
     }));
   }
 
+  getRecentActionExecutionLogs(limit = 100): Array<{
+    id: number; memberId: string; routineId: string; actionId: string;
+    result: string; success: boolean; executedAt: string;
+  }> {
+    const rows = this.db.prepare(
+      `SELECT id, member_id, routine_id, action_id, result, success, executed_at
+       FROM action_execution_log ORDER BY id DESC LIMIT ?`,
+    ).all(limit) as Array<{
+      id: number; member_id: string; routine_id: string; action_id: string;
+      result: string; success: number; executed_at: string;
+    }>;
+    return rows.map((r) => ({
+      id: r.id,
+      memberId: r.member_id,
+      routineId: r.routine_id,
+      actionId: r.action_id,
+      result: r.result,
+      success: !!r.success,
+      executedAt: r.executed_at,
+    }));
+  }
+
   cleanOldChats(daysToKeep = 30): number {
     const result = this.db
       .prepare(

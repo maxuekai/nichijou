@@ -88,6 +88,17 @@ export const api = {
         dayPlan: { date: string; memberId: string; items: Array<{ id: string; title: string; timeSlot?: string; time?: string; source: string; reminders: Array<{ offsetMinutes: number; message: string; channel: string }> }> };
       }>;
       soul: string;
+      notifications: Array<{
+        id: number;
+        memberId: string;
+        memberName: string;
+        routineId: string;
+        routineTitle: string;
+        actionId: string;
+        result: string;
+        success: boolean;
+        executedAt: string;
+      }>;
     }>("/board/data"),
 
   // --- Reminders ---

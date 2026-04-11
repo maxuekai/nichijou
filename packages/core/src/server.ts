@@ -381,8 +381,11 @@ export class NichijouServer {
       if (path.startsWith("/api/action-logs/") && method === "GET") {
         const memberId = path.split("/")[3]!;
         const reqUrl = new URL(req.url ?? "", `http://${req.headers.host}`);
-        const limit = parseInt(reqUrl.searchParams.get("limit") ?? "20", 10);
-        const logs = this.butler.db.getActionExecutionLogs(memberId, limit);
+        const parsedLimit = parseInt(reqUrl.searchParams.get("limit") ?? "20", 10);
+        const safeLimit = Number.isFinite(parsedLimit)
+          ? Math.min(200, Math.max(1, parsedLimit))
+          : 20;
+        const logs = this.butler.db.getActionExecutionLogs(memberId, safeLimit);
         this.json(res, logs);
         return;
       }
@@ -639,7 +642,23 @@ export class NichijouServer {
           return { ...m, profile, dayPlan };
         });
 
-        this.json(res, { family: familyData, members: memberDetails, soul });
+        const recentActionLogs = this.butler.db.getRecentActionExecutionLogs(120);
+        const memberMap = new Map(members.map((m) => [m.id, m]));
+        const routineTitleMaps = new Map<string, Map<string, string>>();
+        for (const member of members) {
+          const routines = this.butler.routineEngine.getRoutines(member.id);
+          routineTitleMaps.set(
+            member.id,
+            new Map(routines.map((r) => [r.id, r.title])),
+          );
+        }
+        const notifications = recentActionLogs.map((log) => ({
+          ...log,
+          memberName: memberMap.get(log.memberId)?.name ?? log.memberId,
+          routineTitle: routineTitleMaps.get(log.memberId)?.get(log.routineId) ?? log.routineId,
+        }));
+
+        this.json(res, { family: familyData, members: memberDetails, soul, notifications });
         return;
       }
 
