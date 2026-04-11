@@ -354,8 +354,8 @@ export class NichijouServer {
             this.json(res, { ok: false, error: "memberId 和 description 为必填" });
             return;
           }
-          const routine = await this.butler.parseRoutineDescription(body.memberId, body.description);
-          this.json(res, { ok: true, routine });
+          const { routine, warnings } = await this.butler.parseRoutineDescription(body.memberId, body.description);
+          this.json(res, { ok: true, routine, warnings });
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           this.json(res, { ok: false, error: msg });
@@ -375,6 +375,15 @@ export class NichijouServer {
         const memberId = path.split("/")[3]!;
         const plan = this.butler.routineEngine.resolveDayPlan(memberId, new Date());
         this.json(res, plan);
+        return;
+      }
+
+      if (path.startsWith("/api/action-logs/") && method === "GET") {
+        const memberId = path.split("/")[3]!;
+        const reqUrl = new URL(req.url ?? "", `http://${req.headers.host}`);
+        const limit = parseInt(reqUrl.searchParams.get("limit") ?? "20", 10);
+        const logs = this.butler.db.getActionExecutionLogs(memberId, limit);
+        this.json(res, logs);
         return;
       }
 

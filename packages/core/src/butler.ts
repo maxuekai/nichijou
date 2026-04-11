@@ -850,12 +850,13 @@ export class ButlerService {
     }
   }
 
-  async parseRoutineDescription(memberId: string, description: string): Promise<Routine> {
+  async parseRoutineDescription(memberId: string, description: string): Promise<{ routine: Routine; warnings: string[] }> {
     const member = this.familyManager.getMember(memberId);
     const existing = this.routineEngine.getRoutines(memberId);
     const { display, iso } = this.formatNow();
 
     const pluginTools = this.pluginHost.getAvailableTools();
+    const toolNames = pluginTools.map((t) => t.toolName);
     const toolsDesc = pluginTools.length > 0
       ? pluginTools.map((t) => `  - ${t.toolName}（${t.pluginName}）: ${t.description}`).join("\n")
       : "  （暂无已安装插件）";
@@ -876,24 +877,24 @@ export class ButlerService {
       JSON.stringify({
         title: "习惯名称",
         weekdays: [1, 3, 5],
-        timeSlot: "morning | afternoon | evening",
         time: "HH:MM",
         actions: [
-          { id: "act_xxx", type: "notify", trigger: "before", offsetMinutes: 30, channel: "wechat", message: "提醒内容" },
-          { id: "act_yyy", type: "ai_task", trigger: "before", offsetMinutes: 60, channel: "wechat", prompt: "描述 AI 需要执行的任务" },
+          { id: "act_xxx", type: "notify", trigger: "at", offsetMinutes: 0, message: "到时通知内容" },
+          { id: "act_yyy", type: "ai_task", trigger: "before", offsetMinutes: 60, prompt: "描述 AI 需要执行的任务" },
         ],
+        warnings: ["如果用户描述的功能没有对应的已安装插件支持，在此列出警告"],
       }, null, 2),
       "",
       "# 规则",
       "1. weekdays: 0=周日, 1=周一, ..., 6=周六",
-      "2. timeSlot: morning(6-12点), afternoon(12-18点), evening(18点后)",
-      "3. time: 24小时制 HH:MM 格式",
-      "4. actions 必须包含至少一个 notify 类型（确保用户收到通知）",
-      "5. 如果用户描述涉及天气、健身装备、买菜等，生成 ai_task 类型的 action，prompt 中描述任务需求（如「查询明天天气并给出穿衣建议」），运行时 AI 会自动调用对应插件",
-      "6. 优先使用 ai_task 而非 plugin 类型，因为 ai_task 更灵活，能综合多个工具",
-      "7. 每个 action 的 id 用 act_ 前缀加随机字符串",
-      "8. trigger: before=提前, at=准时, after=之后; offsetMinutes 表示提前/延后的分钟数，trigger=at 时 offsetMinutes=0",
-      "9. channel: wechat=微信通知, dashboard=看板, both=两者",
+      "2. time: 24小时制 HH:MM 格式",
+      "3. actions 必须包含至少一个 notify 类型（确保用户收到通知）",
+      "4. 如果用户描述涉及天气、健身装备、买菜等，生成 ai_task 类型的 action，prompt 中描述任务需求（如「查询明天天气并给出穿衣建议」），运行时 AI 会自动调用对应插件",
+      "5. 优先使用 ai_task 而非 plugin 类型，因为 ai_task 更灵活，能综合多个工具",
+      "6. 每个 action 的 id 用 act_ 前缀加随机字符串",
+      "7. trigger: before=提前, at=准时, after=之后; offsetMinutes 表示提前/延后的分钟数，trigger=at 时 offsetMinutes=0",
+      "8. 不要输出 channel 字段，系统会统一处理通知渠道",
+      "9. 如果用户描述的功能需要某个插件但该插件未在可用列表中，在 warnings 数组中说明（如「需要天气插件但未安装」）",
       "10. 只返回 JSON，不要有任何其他文字",
     ].filter(Boolean).join("\n");
 
@@ -907,32 +908,33 @@ export class ButlerService {
     });
     this.logProviderUsage(memberId, result.usage);
 
-    let text = result.message.content.trim();
+    const text = result.message.content.trim();
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (!jsonMatch) throw new Error("AI 未能返回有效的 JSON 格式");
     const parsed = JSON.parse(jsonMatch[0]) as {
       title: string;
       weekdays: number[];
-      timeSlot?: string;
       time?: string;
       actions?: Array<{
         id?: string;
         type: string;
         trigger: string;
         offsetMinutes: number;
-        channel?: string;
         message?: string;
         prompt?: string;
         toolName?: string;
         toolParams?: Record<string, unknown>;
       }>;
+      warnings?: string[];
     };
+
+    const warnings: string[] = parsed.warnings ?? [];
 
     const routine: Routine = {
       id: `rtn_${Date.now().toString(36)}`,
       title: parsed.title,
+      description,
       weekdays: parsed.weekdays ?? [],
-      timeSlot: (parsed.timeSlot as Routine["timeSlot"]) ?? undefined,
       time: parsed.time,
       reminders: [],
       actions: (parsed.actions ?? []).map((a, i) => ({
@@ -940,7 +942,7 @@ export class ButlerService {
         type: (a.type as "notify" | "plugin" | "ai_task") ?? "notify",
         trigger: (a.trigger as "before" | "at" | "after") ?? "at",
         offsetMinutes: a.offsetMinutes ?? 0,
-        channel: (a.channel as "wechat" | "dashboard" | "both") ?? "wechat",
+        channel: "wechat" as const,
         message: a.message,
         prompt: a.prompt,
         toolName: a.toolName,
@@ -959,7 +961,11 @@ export class ButlerService {
       });
     }
 
-    return routine;
+    if (routine.actions!.some((a) => a.type === "ai_task") && toolNames.length === 0) {
+      warnings.push("当前没有已安装的插件，AI 任务可能无法调用外部工具");
+    }
+
+    return { routine, warnings };
   }
 
   applyRoutines(memberId: string, routines: Routine[]): void {

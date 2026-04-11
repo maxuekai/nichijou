@@ -72,6 +72,7 @@ export interface RoutineAction {
 export interface Routine {
   id: string;
   title: string;
+  description?: string;
   weekdays: number[];
   timeSlot?: "morning" | "afternoon" | "evening";
   time?: string;

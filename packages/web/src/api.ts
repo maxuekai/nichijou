@@ -109,9 +109,14 @@ export const api = {
   // --- AI Routine Parsing ---
 
   parseRoutine: (memberId: string, description: string) =>
-    request<{ ok: boolean; routine?: Record<string, unknown>; error?: string }>(
+    request<{ ok: boolean; routine?: Record<string, unknown>; warnings?: string[]; error?: string }>(
       "/routines/parse",
       { method: "POST", body: JSON.stringify({ memberId, description }) },
+    ),
+
+  getActionLogs: (memberId: string, limit = 20) =>
+    request<Array<{ id: number; memberId: string; routineId: string; actionId: string; result: string; success: boolean; executedAt: string }>>(
+      `/action-logs/${memberId}?limit=${limit}`,
     ),
 
   // --- Plugins ---

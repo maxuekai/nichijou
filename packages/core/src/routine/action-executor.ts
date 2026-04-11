@@ -147,7 +147,6 @@ export class ActionExecutor {
       switch (action.type) {
         case "notify":
           result = action.message ?? routine.title;
-          await this.gateway.sendToMember(memberId, result);
           break;
 
         case "plugin": {
@@ -166,14 +165,7 @@ export class ActionExecutor {
           }
           const toolResult = await this.pluginHost.executeTool(action.toolName, params);
           result = toolResult.content;
-          if (toolResult.isError) {
-            success = false;
-          } else {
-            const channel = action.channel ?? "wechat";
-            if (channel !== "dashboard") {
-              await this.gateway.sendToMember(memberId, result);
-            }
-          }
+          if (toolResult.isError) success = false;
           break;
         }
 
@@ -185,33 +177,15 @@ export class ActionExecutor {
           }
           const taskPrompt = `[定时任务] 习惯「${routine.title}」触发了以下任务，请执行并给出简洁回复：\n\n${action.prompt}`;
           if (this.chatFn) {
-            try {
-              result = await this.chatFn(memberId, taskPrompt);
-              const channel = action.channel ?? "wechat";
-              if (channel !== "dashboard") {
-                await this.gateway.sendToMember(memberId, result);
-              }
-            } catch (err) {
-              result = err instanceof Error ? err.message : String(err);
-              success = false;
-            }
+            result = await this.chatFn(memberId, taskPrompt);
           } else if (this.provider) {
-            try {
-              const resp = await this.provider.chat({
-                messages: [
-                  { role: "system", content: "你是家庭 AI 管家，请根据以下任务简洁回答。" },
-                  { role: "user", content: taskPrompt },
-                ],
-              });
-              result = resp.message.content;
-              const channel = action.channel ?? "wechat";
-              if (channel !== "dashboard") {
-                await this.gateway.sendToMember(memberId, result);
-              }
-            } catch (err) {
-              result = err instanceof Error ? err.message : String(err);
-              success = false;
-            }
+            const resp = await this.provider.chat({
+              messages: [
+                { role: "system", content: "你是家庭 AI 管家，请根据以下任务简洁回答。" },
+                { role: "user", content: taskPrompt },
+              ],
+            });
+            result = resp.message.content;
           } else {
             result = "no LLM provider configured";
             success = false;
@@ -222,6 +196,14 @@ export class ActionExecutor {
     } catch (err) {
       result = err instanceof Error ? err.message : String(err);
       success = false;
+    }
+
+    if (success && result) {
+      try {
+        await this.gateway.sendToMember(memberId, result);
+      } catch (err) {
+        console.error(`[ActionExecutor] sendToMember failed:`, err);
+      }
     }
 
     this.db.logActionExecution(memberId, routine.id, action.id, result, success, minuteKey);
