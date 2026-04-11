@@ -11,14 +11,29 @@ export class RoutineEngine {
   }
 
   getRoutines(memberId: string): Routine[] {
+    const own = this.getOwnRoutines(memberId).filter((r) => !r.archived);
+    const shared = this.getSharedRoutines()
+      .filter((r) => !r.archived)
+      .filter((r) => this.isAssignedToMember(r.assigneeMemberIds, memberId));
+    return [...own, ...shared];
+  }
+
+  getOwnRoutines(memberId: string): Routine[] {
     const content = this.storage.readText(`family/members/${memberId}.routines.yaml`);
     if (!content) return [];
     const data = yaml.load(content) as { routines?: Routine[] };
-    return (data?.routines ?? []).filter((r) => !r.archived);
+    return data?.routines ?? [];
+  }
+
+  getSharedRoutines(): Routine[] {
+    const content = this.storage.readText("family/shared-routines.yaml");
+    if (!content) return [];
+    const data = yaml.load(content) as { routines?: Routine[] };
+    return data?.routines ?? [];
   }
 
   setRoutine(memberId: string, routine: Routine): void {
-    const routines = this.getAllRoutines(memberId);
+    const routines = this.getOwnRoutines(memberId);
     const idx = routines.findIndex((r) => r.id === routine.id);
     if (idx >= 0) {
       routines[idx] = routine;
@@ -28,15 +43,33 @@ export class RoutineEngine {
     this.saveRoutines(memberId, routines);
   }
 
+  setSharedRoutine(routine: Routine): void {
+    const routines = this.getSharedRoutines();
+    const idx = routines.findIndex((r) => r.id === routine.id);
+    if (idx >= 0) {
+      routines[idx] = routine;
+    } else {
+      routines.push({ ...routine, id: routine.id || generateId("rtn") });
+    }
+    this.saveSharedRoutines(routines);
+  }
+
   deleteRoutine(memberId: string, routineId: string): void {
-    const routines = this.getAllRoutines(memberId);
+    const routines = this.getOwnRoutines(memberId);
     const filtered = routines.filter((r) => r.id !== routineId);
     if (filtered.length === routines.length) throw new Error("Routine not found");
     this.saveRoutines(memberId, filtered);
   }
 
+  deleteSharedRoutine(routineId: string): void {
+    const routines = this.getSharedRoutines();
+    const filtered = routines.filter((r) => r.id !== routineId);
+    if (filtered.length === routines.length) throw new Error("Routine not found");
+    this.saveSharedRoutines(filtered);
+  }
+
   archiveRoutine(memberId: string, routineId: string): void {
-    const routines = this.getAllRoutines(memberId);
+    const routines = this.getOwnRoutines(memberId);
     const routine = routines.find((r) => r.id === routineId);
     if (routine) {
       routine.archived = true;
@@ -45,20 +78,40 @@ export class RoutineEngine {
   }
 
   getOverrides(memberId: string): Override[] {
+    const own = this.getOwnOverrides(memberId);
+    const shared = this.getSharedOverrides()
+      .filter((o) => this.isAssignedToMember(o.assigneeMemberIds, memberId));
+    return [...own, ...shared];
+  }
+
+  getOwnOverrides(memberId: string): Override[] {
     const content = this.storage.readText(`family/members/${memberId}.overrides.yaml`);
     if (!content) return [];
     const data = yaml.load(content) as { overrides?: Override[] };
     return data?.overrides ?? [];
   }
 
+  getSharedOverrides(): Override[] {
+    const content = this.storage.readText("family/shared-overrides.yaml");
+    if (!content) return [];
+    const data = yaml.load(content) as { overrides?: Override[] };
+    return data?.overrides ?? [];
+  }
+
   addOverride(memberId: string, override: Override): void {
-    const overrides = this.getOverrides(memberId);
+    const overrides = this.getOwnOverrides(memberId);
     overrides.push({ ...override, id: override.id || generateId("ovr") });
     this.saveOverrides(memberId, overrides);
   }
 
+  addSharedOverride(override: Override): void {
+    const overrides = this.getSharedOverrides();
+    overrides.push({ ...override, id: override.id || generateId("ovr") });
+    this.saveSharedOverrides(overrides);
+  }
+
   updateOverride(memberId: string, overrideId: string, data: Partial<Override>): void {
-    const overrides = this.getOverrides(memberId);
+    const overrides = this.getOwnOverrides(memberId);
     const idx = overrides.findIndex((o) => o.id === overrideId);
     if (idx === -1) {
       this.addOverride(memberId, { ...data, id: overrideId } as Override);
@@ -68,11 +121,30 @@ export class RoutineEngine {
     this.saveOverrides(memberId, overrides);
   }
 
+  updateSharedOverride(overrideId: string, data: Partial<Override>): void {
+    const overrides = this.getSharedOverrides();
+    const idx = overrides.findIndex((o) => o.id === overrideId);
+    if (idx === -1) {
+      this.addSharedOverride({ ...data, id: overrideId } as Override);
+      return;
+    }
+    overrides[idx] = { ...overrides[idx]!, ...data, id: overrideId };
+    this.saveSharedOverrides(overrides);
+  }
+
   removeOverride(memberId: string, overrideId: string): boolean {
-    const overrides = this.getOverrides(memberId);
+    const overrides = this.getOwnOverrides(memberId);
     const filtered = overrides.filter((o) => o.id !== overrideId);
     if (filtered.length === overrides.length) return false;
     this.saveOverrides(memberId, filtered);
+    return true;
+  }
+
+  removeSharedOverride(overrideId: string): boolean {
+    const overrides = this.getSharedOverrides();
+    const filtered = overrides.filter((o) => o.id !== overrideId);
+    if (filtered.length === overrides.length) return false;
+    this.saveSharedOverrides(filtered);
     return true;
   }
 
@@ -100,7 +172,7 @@ export class RoutineEngine {
   }
 
   cleanExpiredOverrides(memberId: string): number {
-    const overrides = this.getOverrides(memberId);
+    const overrides = this.getOwnOverrides(memberId);
     const today = formatDate(new Date());
     const active = overrides.filter((o) => {
       if (o.dateRange) return o.dateRange.end >= today;
@@ -110,13 +182,6 @@ export class RoutineEngine {
     const removed = overrides.length - active.length;
     if (removed > 0) this.saveOverrides(memberId, active);
     return removed;
-  }
-
-  private getAllRoutines(memberId: string): Routine[] {
-    const content = this.storage.readText(`family/members/${memberId}.routines.yaml`);
-    if (!content) return [];
-    const data = yaml.load(content) as { routines?: Routine[] };
-    return data?.routines ?? [];
   }
 
   private isSkipped(routineId: string, dateStr: string, overrides: Override[]): boolean {
@@ -151,7 +216,7 @@ export class RoutineEngine {
       title: r.title,
       timeSlot: r.timeSlot,
       time: r.time,
-      source: "routine",
+      source: r.assigneeMemberIds ? "family_routine" : "routine",
       routineId: r.id,
       reminders: r.reminders,
     };
@@ -162,7 +227,7 @@ export class RoutineEngine {
       id: o.id,
       title: o.title ?? "临时安排",
       timeSlot: o.timeSlot,
-      source: "override",
+      source: o.assigneeMemberIds ? "family_override" : "override",
       reminders: o.reminders ?? [],
     };
   }
@@ -179,5 +244,24 @@ export class RoutineEngine {
       `family/members/${memberId}.overrides.yaml`,
       yaml.dump({ overrides }),
     );
+  }
+
+  private saveSharedRoutines(routines: Routine[]): void {
+    this.storage.writeText(
+      "family/shared-routines.yaml",
+      yaml.dump({ routines }),
+    );
+  }
+
+  private saveSharedOverrides(overrides: Override[]): void {
+    this.storage.writeText(
+      "family/shared-overrides.yaml",
+      yaml.dump({ overrides }),
+    );
+  }
+
+  private isAssignedToMember(assigneeMemberIds: string[] | undefined, memberId: string): boolean {
+    if (!assigneeMemberIds || assigneeMemberIds.length === 0) return true;
+    return assigneeMemberIds.includes(memberId);
   }
 }

@@ -25,14 +25,18 @@ export const api = {
     request("/config", { method: "PUT", body: JSON.stringify(data) }),
 
   getFamily: () => request<{
-    family: { id: string; name: string } | null;
+    family: { id: string; name: string; avatar?: string } | null;
     members: Array<{ id: string; name: string; role: string }>;
   }>("/family"),
   createFamily: (name: string) =>
     request("/family", { method: "POST", body: JSON.stringify({ name }) }),
+  updateFamily: (data: { name?: string; avatar?: string }) =>
+    request<{ ok: boolean; family: { id: string; name: string; avatar?: string } }>("/family", { method: "PUT", body: JSON.stringify(data) }),
 
   addMember: (name: string, role = "member") =>
     request("/members", { method: "POST", body: JSON.stringify({ name, role }) }),
+  updateMember: (id: string, data: { name?: string; profile?: string }) =>
+    request<{ ok: boolean }>(`/members/${id}`, { method: "PUT", body: JSON.stringify(data) }),
   getMember: (id: string) => request<{ member: Record<string, unknown>; profile: string }>(`/members/${id}`),
 
   getSoul: () => request<{ content: string }>("/soul"),
@@ -44,6 +48,16 @@ export const api = {
 
   getRoutines: (memberId: string) =>
     request<{ routines: unknown[]; overrides: unknown[] }>(`/routines/${memberId}`),
+  getFamilyPlans: () =>
+    request<{ routines: unknown[]; overrides: unknown[] }>("/family/plans"),
+  upsertFamilyRoutine: (routineId: string, data: Record<string, unknown>) =>
+    request<{ ok: boolean }>(`/family/routines/${routineId}`, { method: "PUT", body: JSON.stringify(data) }),
+  deleteFamilyRoutine: (routineId: string) =>
+    request<{ ok: boolean }>(`/family/routines/${routineId}`, { method: "DELETE" }),
+  upsertFamilyOverride: (overrideId: string, data: Record<string, unknown>) =>
+    request<{ ok: boolean }>(`/family/overrides/${overrideId}`, { method: "PUT", body: JSON.stringify(data) }),
+  deleteFamilyOverride: (overrideId: string) =>
+    request<{ ok: boolean }>(`/family/overrides/${overrideId}`, { method: "DELETE" }),
   getDayPlan: (memberId: string) =>
     request<{ date: string; memberId: string; items: Array<{ title: string; timeSlot?: string }> }>(`/day-plan/${memberId}`),
 
@@ -81,7 +95,7 @@ export const api = {
 
   getBoardData: () =>
     request<{
-      family: { id: string; name: string } | null;
+      family: { id: string; name: string; avatar?: string } | null;
       members: Array<{
         id: string; name: string; role: string;
         profile: string | null;
@@ -190,6 +204,27 @@ export const api = {
 
   getButlerAvatar: () =>
     request<{ avatar: string | null }>("/butler/avatar"),
+
+  uploadFamilyAvatar: async (file: File): Promise<{ ok: boolean; avatar?: string }> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = async () => {
+        try {
+          const data = reader.result as string;
+          const res = await fetch(`${BASE}/family/avatar`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ data, filename: file.name }),
+          });
+          resolve(await res.json());
+        } catch (e) { reject(e); }
+      };
+      reader.readAsDataURL(file);
+    });
+  },
+
+  getFamilyAvatar: () =>
+    request<{ avatar: string | null }>("/family/avatar"),
 
   avatarUrl: (filename: string) => `${BASE}/avatars/${encodeURIComponent(filename)}`,
 };

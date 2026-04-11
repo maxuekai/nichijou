@@ -172,6 +172,7 @@ export function BoardView() {
   const [members, setMembers] = useState<BoardMember[]>([]);
   const [notifications, setNotifications] = useState<BoardNotification[]>([]);
   const [familyName, setFamilyName] = useState("");
+  const [familyAvatar, setFamilyAvatar] = useState<string | null>(null);
   const [soul, setSoul] = useState("");
   const [weather, setWeather] = useState<WeatherData | null>(null);
   const [weekSchedule, setWeekSchedule] = useState<WeekSchedule>({});
@@ -210,6 +211,7 @@ export function BoardView() {
     try {
       const data = await api.getBoardData();
       setFamilyName(data.family?.name ?? "");
+      setFamilyAvatar(data.family?.avatar ?? null);
       setMembers(data.members);
       setSoul(data.soul);
       setNotifications(data.notifications ?? []);
@@ -321,7 +323,12 @@ export function BoardView() {
                 <p className="text-sm text-[#c8a55a] mt-1">{allFestivals.join(" · ")}</p>
               )}
               {familyName && (
-                <p className="text-sm text-[#6a6054] mt-1">{butlerName}为{familyName}守护每一天</p>
+                <p className="text-sm text-[#6a6054] mt-1 flex items-center gap-2">
+                  {familyAvatar ? (
+                    <img src={api.avatarUrl(familyAvatar)} alt={familyName} className="w-5 h-5 rounded-full object-cover" />
+                  ) : null}
+                  {butlerName}为{familyName}守护每一天
+                </p>
               )}
             </div>
           </div>

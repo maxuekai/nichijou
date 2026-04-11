@@ -164,6 +164,20 @@ export class NichijouServer {
         return;
       }
 
+      if (path === "/api/family" && method === "PUT") {
+        const body = await this.readBody(req) as { name?: string; avatar?: string };
+        const family = this.butler.familyManager.updateFamily(body);
+        this.json(res, { ok: true, family });
+        return;
+      }
+
+      if (path === "/api/family/plans" && method === "GET") {
+        const routines = this.butler.routineEngine.getSharedRoutines();
+        const overrides = this.butler.routineEngine.getSharedOverrides();
+        this.json(res, { routines, overrides });
+        return;
+      }
+
       if (path === "/api/members" && method === "POST") {
         const body = await this.readBody(req) as { name: string; role?: "admin" | "member" };
         const member = this.butler.familyManager.addMember(body.name, body.role);
@@ -333,12 +347,37 @@ export class NichijouServer {
         return;
       }
 
+      if (path.match(/^\/api\/family\/routines\/[^/]+$/) && method === "PUT") {
+        const routineId = path.split("/")[4]!;
+        const body = await this.readBody(req) as Record<string, unknown>;
+        try {
+          this.butler.routineEngine.setSharedRoutine({ ...body, id: routineId } as any);
+          this.json(res, { ok: true });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          this.json(res, { ok: false, error: msg });
+        }
+        return;
+      }
+
       if (path.match(/^\/api\/routines\/[^/]+\/[^/]+$/) && method === "DELETE") {
         const parts = path.split("/");
         const memberId = parts[3]!;
         const routineId = parts[4]!;
         try {
           this.butler.routineEngine.deleteRoutine(memberId, routineId);
+          this.json(res, { ok: true });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          this.json(res, { ok: false, error: msg });
+        }
+        return;
+      }
+
+      if (path.match(/^\/api\/family\/routines\/[^/]+$/) && method === "DELETE") {
+        const routineId = path.split("/")[4]!;
+        try {
+          this.butler.routineEngine.deleteSharedRoutine(routineId);
           this.json(res, { ok: true });
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
@@ -400,6 +439,20 @@ export class NichijouServer {
           this.json(res, { ok: true });
         } else {
           const removed = this.butler.routineEngine.removeOverride(memberId, overrideId);
+          this.json(res, { ok: removed });
+        }
+        return;
+      }
+
+      if (path.startsWith("/api/family/overrides/") && (method === "PUT" || method === "DELETE")) {
+        const parts = path.split("/");
+        const overrideId = parts[4]!;
+        if (method === "PUT") {
+          const body = await this.readBody(req) as Record<string, unknown>;
+          this.butler.routineEngine.updateSharedOverride(overrideId, body as never);
+          this.json(res, { ok: true });
+        } else {
+          const removed = this.butler.routineEngine.removeSharedOverride(overrideId);
           this.json(res, { ok: removed });
         }
         return;
@@ -743,6 +796,26 @@ export class NichijouServer {
           const msg = err instanceof Error ? err.message : String(err);
           this.json(res, { ok: false, error: msg });
         }
+        return;
+      }
+
+      if (path === "/api/family/avatar" && method === "POST") {
+        try {
+          const { buffer, ext } = await this.readAvatarUpload(req);
+          const filename = `family${ext}`;
+          this.butler.storage.writeBinary(`media/avatars/${filename}`, buffer);
+          const family = this.butler.familyManager.updateFamily({ avatar: filename });
+          this.json(res, { ok: true, avatar: filename, family });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          this.json(res, { ok: false, error: msg });
+        }
+        return;
+      }
+
+      if (path === "/api/family/avatar" && method === "GET") {
+        const family = this.butler.familyManager.getFamily();
+        this.json(res, { avatar: family?.avatar ?? null });
         return;
       }
 

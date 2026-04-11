@@ -43,6 +43,7 @@ export interface Family {
   id: string;
   name: string;
   createdAt: string;
+  avatar?: string;
 }
 
 export interface FamilyMember {
@@ -73,6 +74,7 @@ export interface Routine {
   id: string;
   title: string;
   description?: string;
+  assigneeMemberIds?: string[];
   weekdays: number[];
   timeSlot?: "morning" | "afternoon" | "evening";
   time?: string;
@@ -89,6 +91,7 @@ export interface Override {
   date?: string;
   dateRange?: { start: string; end: string };
   action: "skip" | "add" | "modify";
+  assigneeMemberIds?: string[];
   routineId?: string;
   title?: string;
   reason?: string;
@@ -113,7 +116,7 @@ export interface DayPlanItem {
   title: string;
   timeSlot?: string;
   time?: string;
-  source: "routine" | "override";
+  source: "routine" | "override" | "family_routine" | "family_override";
   routineId?: string;
   reminders: ReminderRule[];
 }

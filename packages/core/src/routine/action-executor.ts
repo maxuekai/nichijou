@@ -107,7 +107,7 @@ export class ActionExecutor {
         const actions = this.resolveActions(routine);
         for (const action of actions) {
           if (this.shouldFire(effectiveTime, action, nowHH, nowMM)) {
-            const already = this.db.wasActionExecutedAt(routine.id, action.id, minuteKey);
+            const already = this.db.wasActionExecutedAt(member.id, routine.id, action.id, minuteKey);
             if (already) continue;
             await this.executeAction(member.id, routine, action, minuteKey);
           }

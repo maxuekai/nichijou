@@ -145,5 +145,37 @@ export function createRoutineTools(
         return { content: JSON.stringify(schedule, null, 2) };
       },
     },
+    {
+      name: "set_family_routine",
+      description: "设置或修改家庭共享习惯，可通过 assigneeMemberIds 分配给多个成员",
+      parameters: {
+        type: "object",
+        properties: {
+          routine: { type: "object" },
+        },
+        required: ["routine"],
+      },
+      execute: async (params) => {
+        const routine = params.routine as Routine;
+        routineEngine.setSharedRoutine(routine);
+        return { content: `已设置家庭习惯：${routine.title}` };
+      },
+    },
+    {
+      name: "add_family_override",
+      description: "为家庭共享计划添加临时变动，可通过 assigneeMemberIds 定向到成员",
+      parameters: {
+        type: "object",
+        properties: {
+          override: { type: "object" },
+        },
+        required: ["override"],
+      },
+      execute: async (params) => {
+        const override = params.override as Override;
+        routineEngine.addSharedOverride(override);
+        return { content: `已添加家庭临时变动：${override.title ?? override.action}` };
+      },
+    },
   ];
 }

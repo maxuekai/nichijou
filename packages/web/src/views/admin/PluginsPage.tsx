@@ -126,11 +126,7 @@ export function PluginsPage() {
             >
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-lg bg-amber-50 flex items-center justify-center text-lg">
-                  {plugin.id === "weather" ? "\u{1F326}" :
-                   plugin.id === "fitness" ? "\u{1F3CB}" :
-                   plugin.id === "grocery" ? "\u{1F6D2}" :
-                   plugin.id === "meal-plan" ? "\u{1F372}" :
-                   plugin.id === "travel" ? "\u{2708}" : "\u{1F9E9}"}
+                  {plugin.id === "weather" ? "\u{1F326}" : "\u{1F9E9}"}
                 </div>
                 <div>
                   <div className="flex items-center gap-2">

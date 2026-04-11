@@ -26,6 +26,19 @@ export class FamilyManager {
     return family;
   }
 
+  updateFamily(patch: Partial<Family>): Family {
+    const family = this.getFamily();
+    if (!family) throw new Error("No family exists. Create a family first.");
+    const next: Family = {
+      ...family,
+      ...patch,
+      id: family.id,
+      createdAt: family.createdAt,
+    };
+    this.storage.writeText("family/family.yaml", yaml.dump(next));
+    return next;
+  }
+
   getMembers(): FamilyMember[] {
     const content = this.storage.readText("family/members.yaml");
     if (!content) return [];

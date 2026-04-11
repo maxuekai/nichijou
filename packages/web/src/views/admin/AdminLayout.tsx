@@ -15,6 +15,15 @@ const NAV_GROUPS = [
         ),
       },
       {
+        to: "/admin/family",
+        label: "家庭",
+        icon: (
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M3 10.5L12 3l9 7.5M5.25 9.75V21h13.5V9.75" />
+          </svg>
+        ),
+      },
+      {
         to: "/admin/members",
         label: "成员",
         icon: (

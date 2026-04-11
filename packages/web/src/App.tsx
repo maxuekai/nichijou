@@ -12,6 +12,7 @@ import { WeChatPage } from "./views/admin/WeChatPage";
 import { LogsPage } from "./views/admin/LogsPage";
 import { RemindersPage } from "./views/admin/RemindersPage";
 import { PluginsPage } from "./views/admin/PluginsPage";
+import { FamilyPage } from "./views/admin/FamilyPage";
 import { BoardView } from "./views/board/BoardView";
 
 export function App() {
@@ -40,6 +41,7 @@ export function App() {
       <Route path="/admin" element={<AdminLayout />}>
         <Route index element={<Dashboard />} />
         <Route path="members" element={<MembersPage />} />
+        <Route path="family" element={<FamilyPage />} />
         <Route path="soul" element={<SoulEditor />} />
         <Route path="status" element={<StatusPage />} />
         <Route path="chat" element={<ChatPage />} />

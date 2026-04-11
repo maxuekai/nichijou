@@ -303,10 +303,10 @@ export class Database {
     }
   }
 
-  wasActionExecutedAt(routineId: string, actionId: string, minuteKey: string): boolean {
+  wasActionExecutedAt(memberId: string, routineId: string, actionId: string, minuteKey: string): boolean {
     const row = this.db.prepare(
-      `SELECT 1 FROM action_execution_log WHERE routine_id = ? AND action_id = ? AND executed_at LIKE ? LIMIT 1`,
-    ).get(routineId, actionId, `${minuteKey}%`) as unknown;
+      `SELECT 1 FROM action_execution_log WHERE member_id = ? AND routine_id = ? AND action_id = ? AND executed_at LIKE ? LIMIT 1`,
+    ).get(memberId, routineId, actionId, `${minuteKey}%`) as unknown;
     return !!row;
   }
 

@@ -9,7 +9,7 @@
 - **周期计划引擎** — 定义长期习惯 + 临时覆盖，自动提醒
 - **微信通道** — 通过 ClawBot (iLink) 与家庭成员微信互联
 - **iPad 看板** — 全屏看板模式，展示家庭成员今日计划
-- **插件体系** — 健身助手、家庭菜单、出行规划、采购助手
+- **插件体系** — 可扩展插件能力（默认提供天气能力）
 - **OpenClaw Skill 兼容** — 可加载 SKILL.md 格式的技能
 
 ## 快速开始
@@ -68,10 +68,7 @@ nichijou-loop/
     channel-wechat/  # 微信 iLink 通道
     plugin-sdk/      # 插件开发 SDK
     plugins/
-      fitness/       # 健身助手插件
-      meal-plan/     # 家庭菜单插件
-      travel/        # 出行规划插件
-      grocery/       # 采购助手插件
+      weather/       # 天气插件（示例）
     web/             # React Dashboard (Vite + TailwindCSS)
 ```
 
