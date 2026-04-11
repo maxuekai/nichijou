@@ -104,6 +104,7 @@ export class FamilyManager {
     const member = members.find((m) => m.id === memberId);
     if (!member) throw new Error(`Member not found: ${memberId}`);
     member.channelBindings[channel] = channelUserId;
+    member.primaryChannel = channel;
     this.saveMembers(members);
   }
 

@@ -70,11 +70,18 @@ export class Gateway {
 
   async sendToMember(memberId: string, text: string): Promise<void> {
     const member = this.familyManager.getMember(memberId);
-    if (!member) return;
-    const channel = this.channels.get(member.primaryChannel);
-    if (channel) {
-      await channel.send(memberId, text);
+    if (!member) throw new Error(`member not found: ${memberId}`);
+    const channelId = member.primaryChannel && this.channels.has(member.primaryChannel)
+      ? member.primaryChannel
+      : (member.channelBindings.wechat ? "wechat" : "");
+    if (!channelId) {
+      throw new Error(`no available channel for member ${memberId}`);
     }
+    const channel = this.channels.get(channelId);
+    if (!channel) {
+      throw new Error(`channel not registered: ${channelId}`);
+    }
+    await channel.send(memberId, text);
   }
 
   getChannel(id: string): Channel | undefined {

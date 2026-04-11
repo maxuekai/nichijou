@@ -298,23 +298,20 @@ export class WeChatChannel implements Channel {
   async send(memberId: string, text: string): Promise<void> {
     const connId = this.memberIdIndex.get(memberId);
     if (!connId) {
-      console.warn(`[WeChat] 成员 ${memberId} 无微信连接`);
-      return;
+      throw new Error(`成员 ${memberId} 无微信连接`);
     }
     const conn = this.connections.get(connId);
     const client = this.clients.get(connId);
-    if (!client || !conn) return;
+    if (!client || !conn) throw new Error(`连接 ${connId} 不可用`);
 
     if (conn.status !== "connected") {
-      console.warn(`[WeChat] 连接 ${connId} 状态: ${conn.status}`);
-      return;
+      throw new Error(`连接 ${connId} 状态: ${conn.status}`);
     }
 
     // Send to the WeChat user who scanned (not the bot itself)
     const toUserId = conn.wechatUserId;
     if (!toUserId) {
-      console.warn(`[WeChat] 连接 ${connId} 缺少 wechatUserId`);
-      return;
+      throw new Error(`连接 ${connId} 缺少 wechatUserId`);
     }
 
     await client.sendText(toUserId, text);

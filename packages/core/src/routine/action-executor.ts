@@ -219,6 +219,9 @@ export class ActionExecutor {
       try {
         await this.gateway.sendToMember(memberId, result);
       } catch (err) {
+        success = false;
+        const sendError = err instanceof Error ? err.message : String(err);
+        result = `${result}\n[send_error] ${sendError}`;
         console.error(`[ActionExecutor] sendToMember failed:`, err);
       }
     }
