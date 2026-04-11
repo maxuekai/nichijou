@@ -291,10 +291,16 @@ export class Database {
     this.db.prepare(`DELETE FROM reminders WHERE id = ?`).run(id);
   }
 
-  logActionExecution(memberId: string, routineId: string, actionId: string, result: string, success: boolean): void {
-    this.db.prepare(
-      `INSERT INTO action_execution_log (member_id, routine_id, action_id, result, success) VALUES (?, ?, ?, ?, ?)`,
-    ).run(memberId, routineId, actionId, result, success ? 1 : 0);
+  logActionExecution(memberId: string, routineId: string, actionId: string, result: string, success: boolean, executedAt?: string): void {
+    if (executedAt) {
+      this.db.prepare(
+        `INSERT INTO action_execution_log (member_id, routine_id, action_id, result, success, executed_at) VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run(memberId, routineId, actionId, result, success ? 1 : 0, executedAt);
+    } else {
+      this.db.prepare(
+        `INSERT INTO action_execution_log (member_id, routine_id, action_id, result, success) VALUES (?, ?, ?, ?, ?)`,
+      ).run(memberId, routineId, actionId, result, success ? 1 : 0);
+    }
   }
 
   wasActionExecutedAt(routineId: string, actionId: string, minuteKey: string): boolean {

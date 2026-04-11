@@ -71,6 +71,7 @@ export class ButlerService {
       this.routineEngine, this.familyManager, this.pluginHost,
       this.gateway, null, this.db, this.config,
     );
+    this.actionExecutor.setChatFunction((memberId, prompt) => this.chat(memberId, prompt));
 
     this.gateway.onMessage(this.handleMessage.bind(this));
     this.gateway.onUnboundMessage(this.handleUnboundMessage.bind(this));
@@ -148,16 +149,43 @@ export class ButlerService {
     ];
   }
 
+  /** 使用配置时区格式化当前时间，返回人类可读 + ISO 字符串 */
+  private formatNow(): { display: string; iso: string } {
+    const tz = this.config.get().timezone || "Asia/Shanghai";
+    const now = new Date();
+    const parts = new Intl.DateTimeFormat("zh-CN", {
+      timeZone: tz,
+      year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit",
+      weekday: "long",
+      hour12: false,
+    }).formatToParts(now);
+    const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "";
+    const display = `${get("year")}年${get("month")}月${get("day")}日 ${get("weekday")} ${get("hour")}:${get("minute")}:${get("second")}`;
+    const iso = now.toLocaleString("sv-SE", { timeZone: tz }).replace(" ", "T");
+    const offset = this.tzOffset(now, tz);
+    return { display, iso: `${iso}${offset} (${tz})` };
+  }
+
+  private tzOffset(date: Date, tz: string): string {
+    const utc = new Date(date.toLocaleString("en-US", { timeZone: "UTC" }));
+    const local = new Date(date.toLocaleString("en-US", { timeZone: tz }));
+    const diff = (local.getTime() - utc.getTime()) / 60000;
+    const sign = diff >= 0 ? "+" : "-";
+    const h = String(Math.floor(Math.abs(diff) / 60)).padStart(2, "0");
+    const m = String(Math.abs(diff) % 60).padStart(2, "0");
+    return `${sign}${h}:${m}`;
+  }
+
   private buildSystemPrompt(member?: FamilyMember, isOnboarding = false): string {
     const soul = this.storage.readSoul();
     let prompt = soul + "\n\n---\n\n";
 
-    const now = new Date();
-    const weekdays = ["日", "一", "二", "三", "四", "五", "六"];
+    const { display, iso } = this.formatNow();
     prompt += `# 当前时间\n\n`;
-    prompt += `现在是 ${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日 `;
-    prompt += `星期${weekdays[now.getDay()]} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}\n`;
-    prompt += `请根据此时间推算用户描述中涉及的具体日期时间。\n\n---\n\n`;
+    prompt += `现在是 ${display}\n`;
+    prompt += `ISO: ${iso}\n`;
+    prompt += `请根据此精确时间推算用户描述中涉及的具体日期时间。当用户说「明天」「后天」「下周一」等相对时间时，必须以此时间为基准计算。\n\n---\n\n`;
 
     if (member) {
       const profile = this.storage.readMemberProfile(member.id);
@@ -220,6 +248,8 @@ export class ButlerService {
    */
   async chat(memberId: string, input: string, onEvent?: (event: AgentEvent) => void): Promise<string> {
     const session = this.getOrCreateSession(memberId);
+    const member = this.familyManager.getMember(memberId);
+    session.updateSystemPrompt(this.buildSystemPrompt(member ?? undefined));
     const model = this.config.get().llm.model;
 
     const unsub = session.subscribe((event) => {
@@ -607,9 +637,8 @@ export class ButlerService {
       "- 在对话过程中可以简短确认你听到的信息",
     ].join("\n");
 
-    const now = new Date();
-    const wds = ["日", "一", "二", "三", "四", "五", "六"];
-    prompt += `\n\n# 当前时间\n现在是 ${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日 星期${wds[now.getDay()]} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+    const { display, iso } = this.formatNow();
+    prompt += `\n\n# 当前时间\n现在是 ${display}\nISO: ${iso}`;
 
     if (member) {
       prompt += `\n\n当前成员：${member.name}`;

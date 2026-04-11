@@ -35,6 +35,7 @@ interface BoardMember {
   id: string;
   name: string;
   role: string;
+  avatar?: string;
   profile: string | null;
   dayPlan: { date: string; memberId: string; items: PlanItem[] };
 }
@@ -364,9 +365,13 @@ export function BoardView() {
             <p className="text-xs text-[#5a5448] tracking-[0.2em] mb-2">家人 · {members.length}</p>
             {members.map((m) => (
               <div key={m.id} className="flex items-center gap-3 bg-[#231f1c] rounded-xl px-4 py-3 border border-[#2e2a26]">
-                <div className="w-11 h-11 rounded-full bg-[#3a3530] flex items-center justify-center text-[#c8b89a] text-base font-medium flex-shrink-0">
-                  {m.name.charAt(0)}
-                </div>
+                {m.avatar ? (
+                  <img src={api.avatarUrl(m.avatar)} alt={m.name} className="w-11 h-11 rounded-full object-cover flex-shrink-0" />
+                ) : (
+                  <div className="w-11 h-11 rounded-full bg-[#3a3530] flex items-center justify-center text-[#c8b89a] text-base font-medium flex-shrink-0">
+                    {m.name.charAt(0)}
+                  </div>
+                )}
                 <p className="text-base font-medium text-[#ddd5c8]">{m.name}</p>
               </div>
             ))}

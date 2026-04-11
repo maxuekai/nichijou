@@ -52,7 +52,7 @@ interface DayPlanItem {
 }
 
 interface MemberDetail {
-  member: { id: string; name: string; role: string; channelBindings: Record<string, string> };
+  member: { id: string; name: string; role: string; avatar?: string; channelBindings: Record<string, string> };
   profile: string;
   routines: Routine[];
   overrides: Override[];
@@ -60,7 +60,7 @@ interface MemberDetail {
 }
 
 export function MembersPage() {
-  const [members, setMembers] = useState<Array<{ id: string; name: string; role: string }>>([]);
+  const [members, setMembers] = useState<Array<{ id: string; name: string; role: string; avatar?: string }>>([]);
   const [newName, setNewName] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<MemberDetail | null>(null);
@@ -365,9 +365,13 @@ export function MembersPage() {
             >
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center text-amber-700 font-medium">
-                    {m.name.charAt(0)}
-                  </div>
+                  {m.avatar ? (
+                    <img src={api.avatarUrl(m.avatar)} alt={m.name} className="w-10 h-10 rounded-full object-cover" />
+                  ) : (
+                    <div className="w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center text-amber-700 font-medium">
+                      {m.name.charAt(0)}
+                    </div>
+                  )}
                   <div>
                     <p className="text-sm font-medium text-stone-800">{m.name}</p>
                     <p className="text-xs text-stone-400">{m.role === "admin" ? "管理员" : "成员"}</p>
@@ -390,6 +394,40 @@ export function MembersPage() {
         {/* Detail panel */}
         {selectedId && detail && (
           <div className="md:col-span-2 space-y-4">
+            {/* Member header with avatar */}
+            <div className="flex items-center gap-4 bg-white rounded-xl border border-stone-200 p-4">
+              <label className="relative cursor-pointer group">
+                {detail.member.avatar ? (
+                  <img src={api.avatarUrl(detail.member.avatar)} alt={detail.member.name} className="w-16 h-16 rounded-full object-cover" />
+                ) : (
+                  <div className="w-16 h-16 rounded-full bg-amber-100 flex items-center justify-center text-amber-700 text-xl font-medium">
+                    {detail.member.name.charAt(0)}
+                  </div>
+                )}
+                <div className="absolute inset-0 rounded-full bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                  <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
+                  </svg>
+                </div>
+                <input
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    if (!file || !selectedId) return;
+                    await api.uploadAvatar(selectedId, file);
+                    loadMembers();
+                    selectMember(selectedId);
+                  }}
+                />
+              </label>
+              <div>
+                <h2 className="text-lg font-semibold text-stone-800">{detail.member.name}</h2>
+                <p className="text-xs text-stone-400">{detail.member.role === "admin" ? "管理员" : "成员"} · {detail.member.id}</p>
+              </div>
+            </div>
             {/* Tabs */}
             <div className="flex gap-1 bg-stone-100 rounded-lg p-1">
               {([

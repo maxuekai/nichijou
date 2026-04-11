@@ -20,6 +20,7 @@ export class StorageManager {
       join(this.dataDir, "plugins"),
       join(this.dataDir, "wechat", "accounts"),
       join(this.dataDir, "media"),
+      join(this.dataDir, "media", "avatars"),
       join(this.dataDir, "db"),
     ];
     for (const dir of dirs) {
@@ -87,5 +88,17 @@ export class StorageManager {
 
   writeMemberProfile(memberId: string, content: string): void {
     this.writeText(`family/members/${memberId}.md`, content);
+  }
+
+  readBinary(relativePath: string): Buffer | null {
+    const fullPath = this.resolve(relativePath);
+    if (!existsSync(fullPath)) return null;
+    return readFileSync(fullPath);
+  }
+
+  writeBinary(relativePath: string, data: Buffer): void {
+    const fullPath = this.resolve(relativePath);
+    mkdirSync(dirname(fullPath), { recursive: true });
+    writeFileSync(fullPath, data);
   }
 }

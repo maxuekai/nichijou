@@ -125,4 +125,47 @@ export const api = {
 
   detectLocation: () =>
     request<{ lat: string; lon: string; name: string; error?: string }>("/geo/detect"),
+
+  // --- Avatars ---
+
+  uploadAvatar: async (memberId: string, file: File): Promise<{ ok: boolean; avatar?: string }> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = async () => {
+        try {
+          const data = reader.result as string;
+          const res = await fetch(`${BASE}/members/${memberId}/avatar`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ data, filename: file.name }),
+          });
+          resolve(await res.json());
+        } catch (e) { reject(e); }
+      };
+      reader.readAsDataURL(file);
+    });
+  },
+
+  uploadButlerAvatar: async (file: File): Promise<{ ok: boolean; avatar?: string }> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = async () => {
+        try {
+          const data = reader.result as string;
+          const res = await fetch(`${BASE}/butler/avatar`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ data, filename: file.name }),
+          });
+          resolve(await res.json());
+        } catch (e) { reject(e); }
+      };
+      reader.readAsDataURL(file);
+    });
+  },
+
+  getButlerAvatar: () =>
+    request<{ avatar: string | null }>("/butler/avatar"),
+
+  avatarUrl: (filename: string) => `${BASE}/avatars/${encodeURIComponent(filename)}`,
 };

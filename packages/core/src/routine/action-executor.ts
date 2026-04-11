@@ -1,5 +1,5 @@
 import cron from "node-cron";
-import type { Routine, RoutineAction } from "@nichijou/shared";
+import type { Routine, RoutineAction, ReminderRule } from "@nichijou/shared";
 import type { LLMProvider } from "@nichijou/ai";
 import type { RoutineEngine } from "./routine-engine.js";
 import type { FamilyManager } from "../family/family-manager.js";
@@ -8,8 +8,17 @@ import type { Gateway } from "../gateway/gateway.js";
 import type { Database } from "../db/database.js";
 import type { ConfigManager } from "../storage/config.js";
 
+type ChatForAction = (memberId: string, prompt: string) => Promise<string>;
+
+const TIMESLOT_DEFAULTS: Record<string, string> = {
+  morning: "08:00",
+  afternoon: "14:00",
+  evening: "20:00",
+};
+
 export class ActionExecutor {
   private cronTask: cron.ScheduledTask | null = null;
+  private chatFn: ChatForAction | null = null;
 
   constructor(
     private routineEngine: RoutineEngine,
@@ -20,6 +29,10 @@ export class ActionExecutor {
     private db: Database,
     private configManager?: ConfigManager,
   ) {}
+
+  setChatFunction(fn: ChatForAction): void {
+    this.chatFn = fn;
+  }
 
   start(): void {
     if (this.cronTask) return;
@@ -38,22 +51,55 @@ export class ActionExecutor {
     this.provider = provider;
   }
 
+  private resolveTime(routine: Routine): string | null {
+    if (routine.time) return routine.time;
+    if (routine.timeSlot && TIMESLOT_DEFAULTS[routine.timeSlot]) {
+      return TIMESLOT_DEFAULTS[routine.timeSlot]!;
+    }
+    return null;
+  }
+
+  private resolveActions(routine: Routine): RoutineAction[] {
+    if (routine.actions && routine.actions.length > 0) return routine.actions;
+    if (routine.reminders && routine.reminders.length > 0) {
+      return routine.reminders.map((r: ReminderRule, i: number) => ({
+        id: `migrated_${routine.id}_${i}`,
+        type: "notify" as const,
+        trigger: "before" as const,
+        offsetMinutes: r.offsetMinutes,
+        channel: (r.channel as RoutineAction["channel"]) ?? "wechat",
+        message: r.message,
+      }));
+    }
+    return [];
+  }
+
   private async tick(): Promise<void> {
+    const tz = this.configManager?.get().timezone || "Asia/Shanghai";
     const now = new Date();
-    const weekday = now.getDay();
-    const nowHH = String(now.getHours()).padStart(2, "0");
-    const nowMM = String(now.getMinutes()).padStart(2, "0");
-    const minuteKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}T${nowHH}:${nowMM}`;
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", hour12: false,
+    }).formatToParts(now);
+    const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "";
+    const nowHH = get("hour") === "24" ? "00" : get("hour");
+    const nowMM = get("minute");
+    const y = get("year");
+    const mo = get("month");
+    const d = get("day");
+    const weekday = new Date(`${y}-${mo}-${d}T${nowHH}:${nowMM}:00`).getDay();
+    const minuteKey = `${y}-${mo}-${d}T${nowHH}:${nowMM}`;
 
     const members = this.familyManager.getMembers();
     for (const member of members) {
       const routines = this.routineEngine.getRoutines(member.id);
       for (const routine of routines) {
         if (!routine.weekdays.includes(weekday)) continue;
-        if (!routine.time) continue;
-        const actions = routine.actions ?? [];
+        const effectiveTime = this.resolveTime(routine);
+        if (!effectiveTime) continue;
+        const actions = this.resolveActions(routine);
         for (const action of actions) {
-          if (this.shouldFire(routine, action, nowHH, nowMM)) {
+          if (this.shouldFire(effectiveTime, action, nowHH, nowMM)) {
             const already = this.db.wasActionExecutedAt(routine.id, action.id, minuteKey);
             if (already) continue;
             await this.executeAction(member.id, routine, action, minuteKey);
@@ -63,9 +109,8 @@ export class ActionExecutor {
     }
   }
 
-  private shouldFire(routine: Routine, action: RoutineAction, nowHH: string, nowMM: string): boolean {
-    if (!routine.time) return false;
-    const [rH, rM] = routine.time.split(":").map(Number) as [number, number];
+  private shouldFire(effectiveTime: string, action: RoutineAction, nowHH: string, nowMM: string): boolean {
+    const [rH, rM] = effectiveTime.split(":").map(Number) as [number, number];
     const routineMinutes = rH * 60 + rM;
 
     let targetMinutes: number;
@@ -98,7 +143,7 @@ export class ActionExecutor {
           await this.gateway.sendToMember(memberId, result);
           break;
 
-        case "plugin":
+        case "plugin": {
           if (!action.toolName) {
             result = "toolName not configured";
             success = false;
@@ -123,36 +168,55 @@ export class ActionExecutor {
             }
           }
           break;
+        }
 
-        case "ai_task":
-          if (!this.provider || !action.prompt) {
-            result = "provider or prompt not configured";
+        case "ai_task": {
+          if (!action.prompt) {
+            result = "prompt not configured";
             success = false;
             break;
           }
-          try {
-            const resp = await this.provider.chat({
-              messages: [
-                { role: "system", content: "你是家庭 AI 管家，请根据以下任务简洁回答。" },
-                { role: "user", content: action.prompt },
-              ],
-            });
-            result = resp.message.content;
-            const channel = action.channel ?? "wechat";
-            if (channel !== "dashboard") {
-              await this.gateway.sendToMember(memberId, result);
+          const taskPrompt = `[定时任务] 习惯「${routine.title}」触发了以下任务，请执行并给出简洁回复：\n\n${action.prompt}`;
+          if (this.chatFn) {
+            try {
+              result = await this.chatFn(memberId, taskPrompt);
+              const channel = action.channel ?? "wechat";
+              if (channel !== "dashboard") {
+                await this.gateway.sendToMember(memberId, result);
+              }
+            } catch (err) {
+              result = err instanceof Error ? err.message : String(err);
+              success = false;
             }
-          } catch (err) {
-            result = err instanceof Error ? err.message : String(err);
+          } else if (this.provider) {
+            try {
+              const resp = await this.provider.chat({
+                messages: [
+                  { role: "system", content: "你是家庭 AI 管家，请根据以下任务简洁回答。" },
+                  { role: "user", content: taskPrompt },
+                ],
+              });
+              result = resp.message.content;
+              const channel = action.channel ?? "wechat";
+              if (channel !== "dashboard") {
+                await this.gateway.sendToMember(memberId, result);
+              }
+            } catch (err) {
+              result = err instanceof Error ? err.message : String(err);
+              success = false;
+            }
+          } else {
+            result = "no LLM provider configured";
             success = false;
           }
           break;
+        }
       }
     } catch (err) {
       result = err instanceof Error ? err.message : String(err);
       success = false;
     }
 
-    this.db.logActionExecution(memberId, routine.id, action.id, result, success);
+    this.db.logActionExecution(memberId, routine.id, action.id, result, success, minuteKey);
   }
 }

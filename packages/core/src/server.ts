@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { readFileSync, existsSync, statfsSync } from "node:fs";
+import { readFileSync, existsSync, statfsSync, readdirSync } from "node:fs";
 import { join, extname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hostname, platform, release, arch, cpus, totalmem, freemem, uptime as osUptime, loadavg } from "node:os";
@@ -643,6 +643,63 @@ export class NichijouServer {
         return;
       }
 
+      // --- Avatar API ---
+      if (path.match(/^\/api\/members\/[^/]+\/avatar$/) && method === "POST") {
+        const memberId = path.split("/")[3]!;
+        try {
+          const { buffer, ext } = await this.readAvatarUpload(req);
+          const filename = `${memberId}${ext}`;
+          this.butler.storage.writeBinary(`media/avatars/${filename}`, buffer);
+          this.butler.familyManager.updateMember(memberId, { avatar: filename });
+          this.json(res, { ok: true, avatar: filename });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          this.json(res, { ok: false, error: msg });
+        }
+        return;
+      }
+
+      if (path.match(/^\/api\/avatars\/[^/]+$/) && method === "GET") {
+        const filename = decodeURIComponent(path.split("/")[3]!);
+        const data = this.butler.storage.readBinary(`media/avatars/${filename}`);
+        if (!data) {
+          res.writeHead(404);
+          res.end("Not found");
+          return;
+        }
+        const ext = extname(filename).toLowerCase();
+        const mime = ext === ".png" ? "image/png" : ext === ".jpg" || ext === ".jpeg" ? "image/jpeg" : ext === ".gif" ? "image/gif" : ext === ".webp" ? "image/webp" : "application/octet-stream";
+        res.writeHead(200, { "Content-Type": mime, "Cache-Control": "public, max-age=3600" });
+        res.end(data);
+        return;
+      }
+
+      if (path === "/api/butler/avatar" && method === "POST") {
+        try {
+          const { buffer, ext } = await this.readAvatarUpload(req);
+          const filename = `butler${ext}`;
+          this.butler.storage.writeBinary(`media/avatars/${filename}`, buffer);
+          this.json(res, { ok: true, avatar: filename });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          this.json(res, { ok: false, error: msg });
+        }
+        return;
+      }
+
+      if (path === "/api/butler/avatar" && method === "GET") {
+        const avatarDir = this.butler.storage.resolve("media/avatars");
+        const files = existsSync(avatarDir)
+          ? readdirSync(avatarDir).filter((f) => f.startsWith("butler."))
+          : [];
+        if (files.length > 0) {
+          this.json(res, { avatar: files[0] });
+        } else {
+          this.json(res, { avatar: null });
+        }
+        return;
+      }
+
       res.writeHead(404);
       res.end(JSON.stringify({ error: "Not found" }));
     } catch (err) {
@@ -686,6 +743,36 @@ export class NichijouServer {
           resolve(JSON.parse(data));
         } catch {
           reject(new Error("Invalid JSON body"));
+        }
+      });
+      req.on("error", reject);
+    });
+  }
+
+  private readAvatarUpload(req: IncomingMessage): Promise<{ buffer: Buffer; ext: string }> {
+    return new Promise((resolve, reject) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (chunk: Buffer) => chunks.push(chunk));
+      req.on("end", () => {
+        try {
+          const raw = Buffer.concat(chunks);
+          const ct = req.headers["content-type"] ?? "";
+          if (ct.includes("application/json")) {
+            const body = JSON.parse(raw.toString()) as { data: string; filename?: string };
+            const match = body.data.match(/^data:image\/(\w+);base64,(.+)$/);
+            if (!match) {
+              reject(new Error("Invalid base64 data URL"));
+              return;
+            }
+            const imgExt = match[1] === "jpeg" ? ".jpg" : `.${match[1]}`;
+            const buffer = Buffer.from(match[2]!, "base64");
+            resolve({ buffer, ext: imgExt });
+          } else {
+            const ext = ct.includes("png") ? ".png" : ct.includes("gif") ? ".gif" : ct.includes("webp") ? ".webp" : ".jpg";
+            resolve({ buffer: raw, ext });
+          }
+        } catch (err) {
+          reject(err);
         }
       });
       req.on("error", reject);

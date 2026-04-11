@@ -52,6 +52,7 @@ export interface FamilyMember {
   channelBindings: Record<string, string>;
   primaryChannel: string;
   role: "admin" | "member";
+  avatar?: string;
 }
 
 /** Routine types */
