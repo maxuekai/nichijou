@@ -50,7 +50,15 @@ export class PluginHost {
     const tools: ToolDefinition[] = [];
     for (const plugin of this.plugins.values()) {
       if (!this.isEnabled(plugin.id)) continue;
-      tools.push(...plugin.tools);
+      for (const tool of plugin.tools) {
+        tools.push({
+          ...tool,
+          execute: async (params) => {
+            const config = this.pluginConfigs.get(plugin.id) ?? {};
+            return tool.execute({ ...config, ...params });
+          },
+        });
+      }
     }
     return tools;
   }

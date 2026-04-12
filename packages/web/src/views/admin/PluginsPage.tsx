@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { api } from "../../api";
 
 interface PluginConfigField {
@@ -23,6 +23,17 @@ interface PluginInfo {
   configSchema: Record<string, PluginConfigField> | null;
 }
 
+const SENSITIVE_KEYS = /key|secret|token|password/i;
+
+function maskValue(key: string, value: unknown): string {
+  if (value === undefined || value === null || value === "") return "未配置";
+  const str = String(value);
+  if (SENSITIVE_KEYS.test(key) && str.length > 4) {
+    return str.slice(0, 4) + "****" + str.slice(-4);
+  }
+  return str;
+}
+
 export function PluginsPage() {
   const [plugins, setPlugins] = useState<PluginInfo[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -30,8 +41,8 @@ export function PluginsPage() {
 
   const [editingConfigFor, setEditingConfigFor] = useState<string | null>(null);
   const [configValues, setConfigValues] = useState<Record<string, unknown>>({});
+  const [savedConfigs, setSavedConfigs] = useState<Record<string, Record<string, unknown>>>({});
   const [configSaving, setConfigSaving] = useState(false);
-  const [configSaved, setConfigSaved] = useState(false);
   const [configError, setConfigError] = useState<string | null>(null);
   const [toggleError, setToggleError] = useState<string | null>(null);
   const [toggling, setToggling] = useState<string | null>(null);
@@ -51,6 +62,12 @@ export function PluginsPage() {
     }
   }
 
+  const loadSavedConfig = useCallback(async (pluginId: string) => {
+    try {
+      const data = await api.getPluginConfig(pluginId);
+      setSavedConfigs((prev) => ({ ...prev, [pluginId]: data.config ?? {} }));
+    } catch { /* ignore */ }
+  }, []);
 
   async function togglePluginEnabled(pluginId: string, enabled: boolean) {
     setToggling(pluginId);
@@ -76,30 +93,26 @@ export function PluginsPage() {
         if (editingConfigFor === id) setEditingConfigFor(null);
       } else {
         next.add(id);
+        void loadSavedConfig(id);
       }
       return next;
     });
   }
 
-  async function loadPluginConfig(pluginId: string) {
+  function startEditConfig(pluginId: string) {
+    const saved = savedConfigs[pluginId] ?? {};
+    setConfigValues({ ...saved });
     setConfigError(null);
-    try {
-      const data = await api.getPluginConfig(pluginId);
-      setConfigValues(data.config ?? {});
-      setEditingConfigFor(pluginId);
-    } catch (e) {
-      setConfigError(e instanceof Error ? e.message : "加载配置失败");
-    }
+    setEditingConfigFor(pluginId);
   }
 
   async function savePluginConfig(pluginId: string) {
     setConfigSaving(true);
-    setConfigSaved(false);
     setConfigError(null);
     try {
       await api.updatePluginConfig(pluginId, configValues);
-      setConfigSaved(true);
-      setTimeout(() => setConfigSaved(false), 2000);
+      setSavedConfigs((prev) => ({ ...prev, [pluginId]: { ...configValues } }));
+      setEditingConfigFor(null);
       await loadPlugins();
     } catch (e) {
       setConfigError(e instanceof Error ? e.message : "保存失败");
@@ -184,129 +197,158 @@ export function PluginsPage() {
       )}
 
       <div className="space-y-4">
-        {plugins.map((plugin) => (
-          <div key={plugin.id} className="bg-white rounded-xl border border-stone-200 overflow-hidden">
-            <div
-              className="flex items-center justify-between p-5 cursor-pointer hover:bg-stone-50/50 transition-colors"
-              onClick={() => toggleExpand(plugin.id)}
-            >
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-lg bg-amber-50 flex items-center justify-center text-lg">
-                  {plugin.id === "weather" ? "\u{1F326}" : "\u{1F9E9}"}
-                </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h3 className="text-sm font-semibold text-stone-800">{plugin.name}</h3>
-                    <span className="text-xs text-stone-400">v{plugin.version}</span>
+        {plugins.map((plugin) => {
+          const isEditing = editingConfigFor === plugin.id;
+          const hasConfig = plugin.configSchema && Object.keys(plugin.configSchema).length > 0;
+          const currentSaved = savedConfigs[plugin.id] ?? {};
+
+          return (
+            <div key={plugin.id} className="bg-white rounded-xl border border-stone-200 overflow-hidden">
+              <div
+                className="flex items-center justify-between p-5 cursor-pointer hover:bg-stone-50/50 transition-colors"
+                onClick={() => toggleExpand(plugin.id)}
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-lg bg-amber-50 flex items-center justify-center text-lg">
+                    {plugin.id === "weather" ? "\u{1F326}" : "\u{1F9E9}"}
                   </div>
-                  <p className="text-xs text-stone-500 mt-0.5">{plugin.description}</p>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-sm font-semibold text-stone-800">{plugin.name}</h3>
+                      <span className="text-xs text-stone-400">v{plugin.version}</span>
+                    </div>
+                    <p className="text-xs text-stone-500 mt-0.5">{plugin.description}</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className="text-xs text-stone-400">{plugin.tools.length} 个工具</span>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void togglePluginEnabled(plugin.id, !plugin.enabled);
+                    }}
+                    disabled={toggling === plugin.id}
+                    className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none ${
+                      plugin.enabled ? "bg-green-500" : "bg-stone-300"
+                    } ${toggling === plugin.id ? "opacity-50" : "cursor-pointer"}`}
+                  >
+                    <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm transition-transform ${
+                      plugin.enabled ? "translate-x-4" : "translate-x-0.5"
+                    }`} />
+                  </button>
+                  <svg
+                    className={`w-4 h-4 text-stone-400 transition-transform ${expanded.has(plugin.id) ? "rotate-180" : ""}`}
+                    fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                  </svg>
                 </div>
               </div>
-              <div className="flex items-center gap-3">
-                <span className="text-xs text-stone-400">{plugin.tools.length} 个工具</span>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    void togglePluginEnabled(plugin.id, !plugin.enabled);
-                  }}
-                  disabled={toggling === plugin.id}
-                  className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none ${
-                    plugin.enabled ? "bg-green-500" : "bg-stone-300"
-                  } ${toggling === plugin.id ? "opacity-50" : "cursor-pointer"}`}
-                >
-                  <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm transition-transform ${
-                    plugin.enabled ? "translate-x-4" : "translate-x-0.5"
-                  }`} />
-                </button>
-                <svg
-                  className={`w-4 h-4 text-stone-400 transition-transform ${expanded.has(plugin.id) ? "rotate-180" : ""}`}
-                  fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
-                >
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-                </svg>
-              </div>
-            </div>
 
-            {expanded.has(plugin.id) && (
-              <div className="border-t border-stone-100 p-5 bg-stone-50/30">
-                {toggleError && toggling === null && (
-                  <div className="mb-4 p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700">
-                    {toggleError}
-                    <button onClick={() => setToggleError(null)} className="ml-2 underline cursor-pointer">关闭</button>
-                  </div>
-                )}
-                <h4 className="text-xs font-medium text-stone-500 mb-3">提供的工具</h4>
-                <div className="space-y-2">
-                  {plugin.tools.map((tool) => (
-                    <div key={tool.name} className="flex items-start gap-2 p-3 rounded-lg bg-white border border-stone-100">
-                      <span className="text-stone-400 mt-0.5">
-                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                        </svg>
-                      </span>
-                      <div>
-                        <p className="text-sm font-medium text-stone-700">{tool.name}</p>
-                        <p className="text-xs text-stone-500 mt-0.5">{tool.description}</p>
-                      </div>
+              {expanded.has(plugin.id) && (
+                <div className="border-t border-stone-100 p-5 bg-stone-50/30">
+                  {toggleError && toggling === null && (
+                    <div className="mb-4 p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700">
+                      {toggleError}
+                      <button onClick={() => setToggleError(null)} className="ml-2 underline cursor-pointer">关闭</button>
                     </div>
-                  ))}
-                </div>
-
-                {plugin.configSchema && Object.keys(plugin.configSchema).length > 0 && (
-                  <div className="mt-5 pt-5 border-t border-stone-200">
-                    <div className="flex items-center justify-between mb-3">
-                      <h4 className="text-xs font-medium text-stone-500">插件配置</h4>
-                      {editingConfigFor !== plugin.id && (
-                        <button
-                          onClick={() => { void loadPluginConfig(plugin.id); }}
-                          className="text-xs text-amber-600 hover:text-amber-700 cursor-pointer"
-                        >
-                          编辑配置
-                        </button>
-                      )}
-                    </div>
-
-                    {editingConfigFor === plugin.id && (
-                      <div className="space-y-4">
-                        {Object.entries(plugin.configSchema!).map(([key, field]) => (
-                          <div key={key}>
-                            <label className="block text-xs text-stone-600 mb-1">
-                              {key}
-                              {field.required && <span className="text-red-400 ml-0.5">*</span>}
-                            </label>
-                            <p className="text-xs text-stone-400 mb-1.5">{field.description}</p>
-                            {renderConfigField(key, field)}
-                          </div>
-                        ))}
-
-                        {configError && (
-                          <p className="text-xs text-red-600">{configError}</p>
-                        )}
-
-                        <div className="flex items-center gap-2">
-                          <button
-                            onClick={() => { void savePluginConfig(plugin.id); }}
-                            disabled={configSaving}
-                            className="px-4 py-2 rounded-lg bg-amber-500 text-white text-sm font-medium hover:bg-amber-600 disabled:opacity-50 transition-colors cursor-pointer"
-                          >
-                            {configSaving ? "保存中..." : configSaved ? "已保存" : "保存配置"}
-                          </button>
-                          <button
-                            onClick={() => setEditingConfigFor(null)}
-                            className="px-4 py-2 rounded-lg border border-stone-300 text-sm text-stone-600 hover:bg-stone-100 transition-colors cursor-pointer"
-                          >
-                            取消
-                          </button>
+                  )}
+                  <h4 className="text-xs font-medium text-stone-500 mb-3">提供的工具</h4>
+                  <div className="space-y-2">
+                    {plugin.tools.map((tool) => (
+                      <div key={tool.name} className="flex items-start gap-2 p-3 rounded-lg bg-white border border-stone-100">
+                        <span className="text-stone-400 mt-0.5">
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                          </svg>
+                        </span>
+                        <div>
+                          <p className="text-sm font-medium text-stone-700">{tool.name}</p>
+                          <p className="text-xs text-stone-500 mt-0.5">{tool.description}</p>
                         </div>
                       </div>
-                    )}
+                    ))}
                   </div>
-                )}
-              </div>
-            )}
-          </div>
-        ))}
+
+                  {hasConfig && (
+                    <div className="mt-5 pt-5 border-t border-stone-200">
+                      <div className="flex items-center justify-between mb-3">
+                        <h4 className="text-xs font-medium text-stone-500">插件配置</h4>
+                        {!isEditing && (
+                          <button
+                            onClick={() => startEditConfig(plugin.id)}
+                            className="text-xs text-amber-600 hover:text-amber-700 cursor-pointer"
+                          >
+                            编辑配置
+                          </button>
+                        )}
+                      </div>
+
+                      {isEditing ? (
+                        <div className="space-y-4">
+                          {Object.entries(plugin.configSchema!).map(([key, field]) => (
+                            <div key={key}>
+                              <label className="block text-xs text-stone-600 mb-1">
+                                {key}
+                                {field.required && <span className="text-red-400 ml-0.5">*</span>}
+                              </label>
+                              <p className="text-xs text-stone-400 mb-1.5">{field.description}</p>
+                              {renderConfigField(key, field)}
+                            </div>
+                          ))}
+
+                          {configError && (
+                            <p className="text-xs text-red-600">{configError}</p>
+                          )}
+
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => { void savePluginConfig(plugin.id); }}
+                              disabled={configSaving}
+                              className="px-4 py-2 rounded-lg bg-amber-500 text-white text-sm font-medium hover:bg-amber-600 disabled:opacity-50 transition-colors cursor-pointer"
+                            >
+                              {configSaving ? "保存中..." : "保存配置"}
+                            </button>
+                            <button
+                              onClick={() => setEditingConfigFor(null)}
+                              className="px-4 py-2 rounded-lg border border-stone-300 text-sm text-stone-600 hover:bg-stone-100 transition-colors cursor-pointer"
+                            >
+                              取消
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="space-y-2">
+                          {Object.entries(plugin.configSchema!).map(([key, field]) => {
+                            const val = currentSaved[key];
+                            const isEmpty = val === undefined || val === null || val === "";
+                            return (
+                              <div key={key} className="flex items-start justify-between gap-4 py-2 px-3 rounded-lg bg-white border border-stone-100">
+                                <div className="min-w-0">
+                                  <p className="text-xs font-medium text-stone-600">
+                                    {key}
+                                    {field.required && <span className="text-red-400 ml-0.5">*</span>}
+                                  </p>
+                                  <p className="text-[11px] text-stone-400 mt-0.5">{field.description}</p>
+                                </div>
+                                <span className={`text-xs font-mono shrink-0 mt-0.5 ${isEmpty ? "text-stone-300 italic" : "text-stone-600"}`}>
+                                  {field.type === "boolean"
+                                    ? (val ? "true" : "false")
+                                    : maskValue(key, val)}
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
     </div>
   );
