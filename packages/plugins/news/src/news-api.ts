@@ -1,14 +1,103 @@
 import type { NewsAPIResponse, NewsArticle, NewsFetchParams, CacheEntry } from "./types.js";
 
+// 中文RSS新闻源配置
+const chineseRSSFeeds = {
+  technology: [
+    { name: "IT之家", url: "https://www.ithome.com/rss/" },
+    { name: "36氪", url: "https://36kr.com/feed" },
+    { name: "虎嗅", url: "https://www.huxiu.com/rss/0.xml" },
+    { name: "少数派", url: "https://sspai.com/feed" }
+  ],
+  business: [
+    { name: "财经网", url: "http://www.caijing.com.cn/rss/news.xml" },
+    { name: "新浪财经", url: "https://finance.sina.com.cn/roll/finance_roll.shtml" }
+  ],
+  general: [
+    { name: "新浪新闻", url: "https://news.sina.com.cn/roll/news_roll.shtml" },
+    { name: "网易新闻", url: "http://news.163.com/special/00011K6L/rss_newstop.xml" }
+  ]
+};
+
 // 内存缓存
 const newsCache = new Map<string, CacheEntry<NewsAPIResponse>>();
 
-function resolveApiKey(params: Record<string, unknown>): string {
-  const key = (params.newsApiKey as string) || process.env.NEWS_API_KEY || "";
-  if (!key) {
-    throw new Error("NewsAPI Key 未配置。请在管理后台「插件管理」中配置新闻插件的 newsApiKey，或设置环境变量 NEWS_API_KEY。");
+// NewsAPI 相关代码已移除，现在专注于 RSS 源
+
+// 简单的XML解析函数
+function parseXMLField(xml: string, tag: string): string {
+  const regex = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)</${tag}>`, 'i');
+  const match = xml.match(regex);
+  if (!match) return '';
+  
+  // 清理HTML标签和特殊字符
+  return match[1]
+    .replace(/<!\[CDATA\[([^\]]+)\]\]>/g, '$1')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .trim();
+}
+
+// 从RSS获取中文新闻
+async function fetchChineseNewsFromRSS(params: NewsFetchParams): Promise<NewsAPIResponse> {
+  const category = params.category || "technology";
+  const feeds = chineseRSSFeeds[category as keyof typeof chineseRSSFeeds] || chineseRSSFeeds.technology;
+  
+  const allArticles: NewsArticle[] = [];
+  
+  // 尝试获取多个RSS源的内容
+  for (const feed of feeds.slice(0, 2)) { // 只取前2个源避免太慢
+    try {
+      const response = await fetch(feed.url, {
+        signal: AbortSignal.timeout(8000),
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        },
+      });
+      
+      if (!response.ok) continue;
+      
+      const xmlText = await response.text();
+      
+      // 解析RSS项目
+      const itemRegex = /<item[\s\S]*?<\/item>/gi;
+      const items = xmlText.match(itemRegex) || [];
+      
+      for (const item of items.slice(0, 5)) { // 每个源取5条
+        const title = parseXMLField(item, 'title');
+        const description = parseXMLField(item, 'description');
+        const link = parseXMLField(item, 'link');
+        const pubDate = parseXMLField(item, 'pubDate');
+        
+        if (title && link) {
+          allArticles.push({
+            source: { id: null, name: feed.name },
+            author: null,
+            title,
+            description: description || '暂无描述',
+            url: link,
+            urlToImage: null,
+            publishedAt: pubDate || new Date().toISOString(),
+            content: null
+          });
+        }
+      }
+    } catch (error) {
+      console.warn(`获取RSS源 ${feed.name} 失败:`, error);
+      continue;
+    }
   }
-  return key;
+  
+  // 按发布时间排序
+  allArticles.sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime());
+  
+  return {
+    status: 'ok',
+    totalResults: allArticles.length,
+    articles: allArticles
+  };
 }
 
 function getCacheKey(params: NewsFetchParams): string {
@@ -60,73 +149,28 @@ function formatNewsForAI(articles: NewsArticle[], limit: number): string {
   return summary;
 }
 
-async function fetchNewsFromAPI(params: NewsFetchParams, apiKey: string): Promise<NewsAPIResponse> {
-  // 构建 NewsAPI URL
-  const category = params.category || "technology";
-  const country = params.country || "us";
-  const language = params.language || "en";
-  
-  // NewsAPI 免费版只支持 top-headlines
-  const url = new URL("https://newsapi.org/v2/top-headlines");
-  url.searchParams.set("apiKey", apiKey);
-  url.searchParams.set("category", category);
-  url.searchParams.set("country", country);
-  url.searchParams.set("pageSize", String(Math.min(params.limit || 5, 20)));
-  
-  // 如果是中文，调整参数
-  if (language === "zh") {
-    url.searchParams.delete("country");
-    url.searchParams.set("sources", ""); // 移除 sources 参数让 NewsAPI 自动选择
-    url.searchParams.set("q", "科技"); // 添加中文关键词
-  }
-
-  const response = await fetch(url.toString(), {
-    signal: AbortSignal.timeout(8000),
-    headers: {
-      "User-Agent": "Nichijou-News-Plugin/1.0",
-    },
-  });
-
-  if (!response.ok) {
-    if (response.status === 401) {
-      throw new Error("NewsAPI Key 无效，请检查配置");
-    }
-    if (response.status === 429) {
-      throw new Error("NewsAPI 调用次数超限，请稍后再试或升级账户");
-    }
-    throw new Error(`NewsAPI 请求失败: ${response.status} ${response.statusText}`);
-  }
-
-  const data = await response.json() as NewsAPIResponse;
-  
-  if (data.status !== "ok") {
-    throw new Error(`NewsAPI 返回错误: ${data.status}`);
-  }
-
-  return data;
-}
+// fetchNewsFromAPI 函数已移除，现在专注于免费的 RSS 源
 
 export async function fetchNews(
   params: NewsFetchParams,
   config: Record<string, unknown>
 ): Promise<{ content: string; isError?: boolean }> {
-  try {
-    const apiKey = resolveApiKey(config);
-    const cacheKey = getCacheKey(params);
-    const cacheExpireMinutes = (config.newsCacheMinutes as number) || 15;
-    const cacheExpireMs = cacheExpireMinutes * 60 * 1000;
+  const cacheKey = getCacheKey(params);
+  const cacheExpireMinutes = (config.newsCacheMinutes as number) || 15;
+  const cacheExpireMs = cacheExpireMinutes * 60 * 1000;
 
-    // 检查缓存
-    if (config.enableCache !== false) {
-      const cached = newsCache.get(cacheKey);
-      if (cached && isValidCache(cached)) {
-        const formattedNews = formatNewsForAI(cached.data.articles, params.limit || 5);
-        return { content: `${formattedNews}\n\n📝 数据来自缓存（${Math.floor((Date.now() - cached.timestamp) / 60000)}分钟前）` };
-      }
+  // 检查缓存
+  if (config.enableCache !== false) {
+    const cached = newsCache.get(cacheKey);
+    if (cached && isValidCache(cached)) {
+      const formattedNews = formatNewsForAI(cached.data.articles, params.limit || 5);
+      return { content: `${formattedNews}\n\n📝 数据来自缓存（${Math.floor((Date.now() - cached.timestamp) / 60000)}分钟前）` };
     }
+  }
 
-    // 从 API 获取新数据
-    const newsData = await fetchNewsFromAPI(params, apiKey);
+  // 使用免费的中文RSS源获取新闻
+  try {
+    const newsData = await fetchChineseNewsFromRSS(params);
     
     // 缓存结果
     if (config.enableCache !== false) {
@@ -139,23 +183,21 @@ export async function fetchNews(
 
     // 格式化返回给 AI
     const formattedNews = formatNewsForAI(newsData.articles, params.limit || 5);
-    return { content: formattedNews };
-
+    return { content: `${formattedNews}\n\n📡 数据来源：免费RSS源` };
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
+    console.warn('RSS源获取失败:', error);
     
     // 尝试返回缓存数据作为降级
-    const cacheKey = getCacheKey(params);
     const cached = newsCache.get(cacheKey);
     if (cached && config.enableCache !== false) {
       const formattedNews = formatNewsForAI(cached.data.articles, params.limit || 5);
       return { 
-        content: `⚠️ 获取最新新闻失败（${errorMessage}），显示缓存内容：\n\n${formattedNews}` 
+        content: `⚠️ 获取最新新闻失败，显示缓存内容：\n\n${formattedNews}` 
       };
     }
 
     return {
-      content: `新闻获取失败: ${errorMessage}`,
+      content: `新闻获取失败: RSS源无法访问。请检查网络连接或稍后重试。`,
       isError: true,
     };
   }

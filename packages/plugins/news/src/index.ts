@@ -94,15 +94,10 @@ ${article.content.length > 200 ? article.content.substring(0, 200) + "..." : art
 export default definePlugin({
   id: "news",
   name: "新闻助手",
-  description: "获取最新科技新闻和 GitHub 热门 AI 项目信息，支持定时推送和交互式查看",
+  description: "获取最新中文科技新闻和 GitHub 热门 AI 项目信息，基于免费RSS源，支持定时推送和交互式查看",
   version: "0.1.0",
 
   configSchema: {
-    newsApiKey: {
-      type: "string",
-      description: "NewsAPI.org 的 API Key",
-      required: true,
-    },
     githubToken: {
       type: "string",
       description: "GitHub 访问令牌（可选，用于提高 API 限额）",
@@ -156,8 +151,8 @@ export default definePlugin({
     {
       name: "news_fetch",
       description:
-        "获取最新新闻摘要。可指定分类（technology/business/science/general）、" +
-        "国家（cn/us）、数量限制和语言。返回格式化的新闻内容供 AI 处理。",
+        "获取最新中文新闻摘要。基于免费RSS新闻源（IT之家、36氪等），支持科技、商业、综合等分类，" +
+        "完全免费无限制，返回格式化的新闻内容供 AI 处理。",
       parameters: {
         type: "object",
         properties: {

@@ -42,7 +42,6 @@ export interface GitHubRepository {
 
 // 插件配置类型
 export interface NewsPluginConfig {
-  newsApiKey?: string;
   githubToken?: string;
   defaultCategory?: "technology" | "business" | "science" | "general";
   defaultLanguage?: "zh" | "en";
