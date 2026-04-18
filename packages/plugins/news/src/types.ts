@@ -40,25 +40,18 @@ export interface GitHubRepository {
   topics: string[];
 }
 
-// 插件配置类型
+// 插件配置类型（简化版）
 export interface NewsPluginConfig {
-  githubToken?: string;
-  defaultCategory?: "technology" | "business" | "science" | "general";
-  defaultLanguage?: "zh" | "en";
   githubHotness?: "active" | "new" | "popular";
   githubMinStars?: number;
   enableCache?: boolean;
   newsCacheMinutes?: number;
   githubCacheMinutes?: number;
-  enabledRSSSources?: string[]; // 启用的RSS源名称列表
 }
 
-// 工具参数类型
+// 工具参数类型（简化版）
 export interface NewsFetchParams {
-  category?: "technology" | "business" | "science" | "general";
-  country?: "cn" | "us";
   limit?: number;
-  language?: "zh" | "en";
 }
 
 export interface GitHubProjectsParams {
@@ -69,10 +62,7 @@ export interface GitHubProjectsParams {
   limit?: number;
 }
 
-export interface NewsDetailParams {
-  newsId: string;
-  url?: string;
-}
+// NewsDetailParams 已删除 - 不再需要新闻详情功能
 
 // 缓存类型
 export interface CacheEntry<T> {

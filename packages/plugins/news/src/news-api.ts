@@ -1,21 +1,12 @@
 import type { NewsAPIResponse, NewsArticle, NewsFetchParams, CacheEntry } from "./types.js";
 
-// 中文RSS新闻源配置（仅保留经测试可用的源）
-const chineseRSSFeeds = {
-  technology: [
-    { name: "IT之家", url: "https://www.ithome.com/rss/" },
-    { name: "36氪", url: "https://36kr.com/feed" },
-    { name: "少数派", url: "https://sspai.com/feed" }
-  ],
-  business: [
-    // 经测试，暂时没有稳定的商业类RSS源
-    // 财经网和新浪财经返回404错误
-  ],
-  general: [
-    { name: "网易新闻", url: "http://news.163.com/special/00011K6L/rss_newstop.xml" }
-    // 新浪新闻返回404错误，已移除
-  ]
-};
+// 中文RSS新闻源配置（所有可用源，不再分类）
+const availableRSSFeeds = [
+  { name: "IT之家", url: "https://www.ithome.com/rss/" },
+  { name: "36氪", url: "https://36kr.com/feed" },
+  { name: "少数派", url: "https://sspai.com/feed" },
+  { name: "网易新闻", url: "http://news.163.com/special/00011K6L/rss_newstop.xml" }
+];
 
 // 内存缓存
 const newsCache = new Map<string, CacheEntry<NewsAPIResponse>>();
@@ -50,23 +41,12 @@ type RSSFeedResult = {
   feedName: string;
 };
 
-// 从RSS获取中文新闻
+// 从RSS获取中文新闻（简化版，不再分类）
 async function fetchChineseNewsFromRSS(params: NewsFetchParams, config: Record<string, unknown> = {}): Promise<NewsAPIResponse> {
-  const category = params.category || "technology";
-  const feeds = chineseRSSFeeds[category as keyof typeof chineseRSSFeeds] || chineseRSSFeeds.technology;
-  
-  // 根据配置过滤RSS源
-  const enabledFeeds = feeds.filter(feed => {
-    const enabledSourcesStr = config.enabledRSSSources as string | undefined;
-    if (!enabledSourcesStr || enabledSourcesStr.trim() === '') {
-      return true; // 如果没有配置，默认启用所有源
-    }
-    const enabledSources = enabledSourcesStr.split(',').map(s => s.trim());
-    return enabledSources.includes(feed.name);
-  });
+  const enabledFeeds = availableRSSFeeds;
   
   if (enabledFeeds.length === 0) {
-    console.warn(`分类 ${category} 没有启用的RSS源`);
+    console.warn('没有可用的RSS源');
     return {
       status: 'ok',
       totalResults: 0,
@@ -176,9 +156,6 @@ async function fetchChineseNewsFromRSS(params: NewsFetchParams, config: Record<s
 
 function getCacheKey(params: NewsFetchParams): string {
   return JSON.stringify({
-    category: params.category || "technology",
-    country: params.country || "us",
-    language: params.language || "en",
     limit: params.limit || 5,
   });
 }
@@ -206,27 +183,16 @@ function formatNewsForAI(articles: NewsArticle[], limit: number): string {
     const source = article.source.name;
     const description = article.description || "暂无描述";
     
-    // 生成新闻ID（使用索引和URL的简单hash）
-    const simpleHash = article.url.split('').reduce((acc, char) => {
-      return ((acc << 5) - acc + char.charCodeAt(0)) & 0xffffffff;
-    }, 0).toString(16).slice(0, 8);
-    const newsId = `news_${index + 1}_${simpleHash}`;
-    
     return `${index + 1}. 【${source}】${article.title}
    发布时间: ${time}
    摘要: ${description}
-   链接: ${article.url}
-   新闻ID: ${newsId}`;
+   链接: ${article.url}`;
   }).join("\n\n");
 
-  const summary = `📰 获取到 ${limitedArticles.length} 条新闻：\n\n${newsText}
-  
-💡 使用说明：如需查看某条新闻的详细信息，请使用对应的新闻ID调用详情功能。`;
+  const summary = `📰 获取到 ${limitedArticles.length} 条新闻：\n\n${newsText}`;
   
   return summary;
 }
-
-// fetchNewsFromAPI 函数已移除，现在专注于免费的 RSS 源
 
 export async function fetchNews(
   params: NewsFetchParams,
@@ -302,32 +268,6 @@ export async function fetchNews(
   };
 }
 
-// 根据 newsId 查找新闻详情
-export function findNewsByNewsId(newsId: string): NewsArticle | null {
-  // 解析 newsId 格式: news_{index}_{hash}
-  const match = newsId.match(/^news_(\d+)_(.+)$/);
-  if (!match) return null;
-  
-  const [, indexStr] = match;
-  const targetIndex = parseInt(indexStr) - 1; // 转换为0索引
-  
-  // 遍历缓存查找匹配的新闻
-  for (const [, entry] of newsCache.entries()) {
-    if (targetIndex >= 0 && targetIndex < entry.data.articles.length) {
-      const article = entry.data.articles[targetIndex];
-      // 验证 hash 是否匹配（使用同样的简单hash算法）
-      const expectedHash = article.url.split('').reduce((acc, char) => {
-        return ((acc << 5) - acc + char.charCodeAt(0)) & 0xffffffff;
-      }, 0).toString(16).slice(0, 8);
-      if (match[2] === expectedHash) {
-        return article;
-      }
-    }
-  }
-  
-  return null;
-}
-
 // 清理过期缓存的工具函数
 export function cleanExpiredCache(): void {
   const now = Date.now();
@@ -336,61 +276,4 @@ export function cleanExpiredCache(): void {
       newsCache.delete(key);
     }
   }
-}
-
-// 测试RSS源可用性的工具函数
-export async function testRSSSourceAvailability(): Promise<{ [category: string]: { [source: string]: { status: 'success' | 'failed', error?: string, articleCount?: number, responseTime?: number } } }> {
-  const results: any = {};
-  
-  for (const [category, feeds] of Object.entries(chineseRSSFeeds)) {
-    results[category] = {};
-    
-    for (const feed of feeds) {
-      const startTime = Date.now();
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 10000); // 10秒超时
-        
-        const response = await fetch(feed.url, {
-          signal: controller.signal,
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (compatible; RSSChecker/1.0)',
-            'Accept': 'application/rss+xml, application/xml, text/xml',
-          },
-        });
-        
-        clearTimeout(timeoutId);
-        const responseTime = Date.now() - startTime;
-        
-        if (!response.ok) {
-          results[category][feed.name] = {
-            status: 'failed',
-            error: `HTTP ${response.status}: ${response.statusText}`,
-            responseTime
-          };
-          continue;
-        }
-        
-        const xmlText = await response.text();
-        const itemRegex = /<item[\s\S]*?<\/item>/gi;
-        const items = xmlText.match(itemRegex) || [];
-        
-        results[category][feed.name] = {
-          status: 'success',
-          articleCount: items.length,
-          responseTime
-        };
-        
-      } catch (error) {
-        const responseTime = Date.now() - startTime;
-        results[category][feed.name] = {
-          status: 'failed',
-          error: error instanceof Error ? error.message : String(error),
-          responseTime
-        };
-      }
-    }
-  }
-  
-  return results;
 }
