@@ -23,6 +23,8 @@ import { ActivityReminderScheduler } from "./reminder/activity-reminder.js";
 import { PluginHost } from "./plugin-host/plugin-host.js";
 import { resolvePluginImportUrl } from "./plugins/resolve-plugin.js";
 import { ActionExecutor } from "./routine/action-executor.js";
+import { ModelManager } from "./services/model-manager.js";
+import type { AgentContext } from "./types/agent.js";
 
 interface WeChatConnection {
   connectionId: string;
@@ -56,6 +58,7 @@ export class ButlerService {
   readonly activityReminderScheduler: ActivityReminderScheduler;
   readonly pluginHost: PluginHost;
   readonly actionExecutor: ActionExecutor;
+  readonly modelManager: ModelManager;
 
   private provider: LLMProvider | null = null;
   private sessions = new Map<string, AgentSession>();
@@ -72,11 +75,15 @@ export class ButlerService {
     this.reminderScheduler = new ReminderScheduler(this.db, this.gateway);
     this.activityReminderScheduler = new ActivityReminderScheduler(this.db, this.gateway, this.familyManager);
     this.pluginHost = new PluginHost(this.storage);
+    this.modelManager = new ModelManager(this.config);
     this.actionExecutor = new ActionExecutor(
       this.routineEngine, this.familyManager, this.pluginHost,
       this.gateway, null, this.db, this.config,
     );
     this.actionExecutor.setChatFunction((memberId, prompt) => this.chat(memberId, prompt));
+
+    // 执行配置迁移
+    this.modelManager.migrateFromLegacyConfig();
 
     this.gateway.onMessage(this.handleMessage.bind(this));
     this.gateway.onUnboundMessage(this.handleUnboundMessage.bind(this));
@@ -130,7 +137,49 @@ export class ButlerService {
     return this._wechatChannel;
   }
 
-  getProvider(): LLMProvider {
+  getProvider(context?: AgentContext): LLMProvider {
+    // 如果指定了上下文中的模型ID，优先使用
+    if (context?.preferredModelId) {
+      const model = this.modelManager.getModelById(context.preferredModelId);
+      if (model && model.enabled) {
+        return createProvider({
+          baseUrl: model.baseUrl,
+          apiKey: model.apiKey,
+          model: model.model,
+          timeout: model.timeout
+        });
+      }
+    }
+
+    // 如果指定了agent上下文，尝试获取agent绑定的模型
+    if (context?.agentId) {
+      const agentModel = this.modelManager.getModelForAgent(context.agentId);
+      if (agentModel && agentModel.enabled) {
+        return createProvider({
+          baseUrl: agentModel.baseUrl,
+          apiKey: agentModel.apiKey,
+          model: agentModel.model,
+          timeout: agentModel.timeout
+        });
+      }
+    }
+
+    // 使用新的多模型配置
+    const activeModel = this.modelManager.getActiveModel();
+    if (activeModel && activeModel.enabled) {
+      if (!this.provider) {
+        this.provider = createProvider({
+          baseUrl: activeModel.baseUrl,
+          apiKey: activeModel.apiKey,
+          model: activeModel.model,
+          timeout: activeModel.timeout
+        });
+        this.actionExecutor.setProvider(this.provider);
+      }
+      return this.provider;
+    }
+
+    // 回退到旧的配置格式（向后兼容）
     if (!this.provider) {
       const cfg = this.config.get();
       this.provider = createProvider(cfg.llm);

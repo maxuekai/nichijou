@@ -24,6 +24,59 @@ export const api = {
   updateConfig: (data: Record<string, unknown>) =>
     request("/config", { method: "PUT", body: JSON.stringify(data) }),
 
+  // Models API
+  getModels: () => request<{
+    models: Array<{
+      id: string;
+      name: string;
+      provider: string;
+      baseUrl: string;
+      apiKey: string;
+      model: string;
+      timeout?: number;
+      enabled: boolean;
+      isDefault: boolean;
+      createdAt: string;
+      lastUsedAt?: string;
+    }>;
+    activeModelId: string;
+  }>("/models"),
+  addModel: (config: {
+    name: string;
+    provider: string;
+    baseUrl: string;
+    apiKey: string;
+    model: string;
+    timeout?: number;
+    enabled: boolean;
+    isDefault: boolean;
+  }) => request<{ ok: boolean; id: string }>("/models", { method: "POST", body: JSON.stringify(config) }),
+  updateModel: (id: string, updates: Partial<{
+    name: string;
+    provider: string;
+    baseUrl: string;
+    apiKey: string;
+    model: string;
+    timeout?: number;
+    enabled: boolean;
+    isDefault: boolean;
+  }>) => request<{ ok: boolean }>(`/models/${id}`, { method: "PUT", body: JSON.stringify(updates) }),
+  deleteModel: (id: string) => request<{ ok: boolean }>(`/models/${id}`, { method: "DELETE" }),
+  testModel: (config: {
+    id: string;
+    name: string;
+    provider: string;
+    baseUrl: string;
+    apiKey: string;
+    model: string;
+    timeout?: number;
+    enabled: boolean;
+    isDefault: boolean;
+    createdAt: string;
+    lastUsedAt?: string;
+  }) => request<{ success: boolean; error?: string }>(`/models/${config.id}/test`, { method: "POST" }),
+  activateModel: (id: string) => request<{ ok: boolean }>(`/models/${id}/activate`, { method: "PUT" }),
+
   getFamily: () => request<{
     family: { id: string; name: string; avatar?: string; homeCity?: string; homeAdcode?: string } | null;
     members: Array<{ id: string; name: string; role: string }>;

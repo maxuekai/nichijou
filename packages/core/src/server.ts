@@ -32,6 +32,7 @@ const MIME_TYPES: Record<string, string> = {
 
 const CONFIG_PATCH_KEYS = new Set([
   "llm",
+  "models",
   "port",
   "timezone",
   "setupCompleted",
@@ -724,6 +725,98 @@ export class NichijouServer {
           }
           return;
         }
+      }
+
+      // --- Models API ---
+      if (path === "/api/models" && method === "GET") {
+        console.log("[Server] Getting models...");
+        const models = this.butler.modelManager.getAllModels();
+        console.log("[Server] Found models:", models.length, models);
+        const activeModelId = this.butler.modelManager.getActiveModel()?.id || '';
+        console.log("[Server] Active model ID:", activeModelId);
+        
+        // 隐藏敏感信息
+        const safeModels = models.map(m => ({
+          ...m,
+          apiKey: m.apiKey ? "***" : ""
+        }));
+        console.log("[Server] Returning safe models:", safeModels);
+        this.json(res, { models: safeModels, activeModelId });
+        return;
+      }
+
+      if (path === "/api/models" && method === "POST") {
+        const body = await this.readBody(req) as Omit<import("./storage/config.js").LLMModelConfig, 'id' | 'createdAt'>;
+        try {
+          const id = this.butler.modelManager.addModel(body);
+          this.json(res, { ok: true, id });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          this.json(res, { ok: false, error: msg });
+        }
+        return;
+      }
+
+      if (path.match(/^\/api\/models\/[^/]+$/) && method === "PUT") {
+        const modelId = path.split("/")[3]!;
+        const body = await this.readBody(req) as Partial<import("./storage/config.js").LLMModelConfig>;
+        try {
+          this.butler.modelManager.updateModel(modelId, body);
+          // 如果更新的是活跃模型，刷新provider
+          const activeModel = this.butler.modelManager.getActiveModel();
+          if (activeModel?.id === modelId) {
+            this.butler.refreshProvider();
+          }
+          this.json(res, { ok: true });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          this.json(res, { ok: false, error: msg });
+        }
+        return;
+      }
+
+      if (path.match(/^\/api\/models\/[^/]+$/) && method === "DELETE") {
+        const modelId = path.split("/")[3]!;
+        try {
+          this.butler.modelManager.deleteModel(modelId);
+          this.butler.refreshProvider(); // 删除后刷新provider
+          this.json(res, { ok: true });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          this.json(res, { ok: false, error: msg });
+        }
+        return;
+      }
+
+      if (path.match(/^\/api\/models\/[^/]+\/test$/) && method === "POST") {
+        const modelId = path.split("/")[3]!;
+        const model = this.butler.modelManager.getModelById(modelId);
+        if (!model) {
+          this.json(res, { ok: false, error: "模型不存在" });
+          return;
+        }
+
+        try {
+          const result = await this.butler.modelManager.testModel(model);
+          this.json(res, result);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          this.json(res, { success: false, error: msg });
+        }
+        return;
+      }
+
+      if (path.match(/^\/api\/models\/[^/]+\/activate$/) && method === "PUT") {
+        const modelId = path.split("/")[3]!;
+        try {
+          this.butler.modelManager.activateModel(modelId);
+          this.butler.refreshProvider(); // 激活后刷新provider
+          this.json(res, { ok: true });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          this.json(res, { ok: false, error: msg });
+        }
+        return;
       }
 
       // --- Tools API ---
