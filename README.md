@@ -11,6 +11,7 @@
 - **iPad 看板** — 全屏看板模式，展示家庭成员今日计划
 - **插件体系** — 可扩展插件能力（默认提供天气能力）
 - **OpenClaw Skill 兼容** — 可加载 SKILL.md 格式的技能
+- **多媒体对话日志** — 管理后台可查看带图片/语音/文件/视频的会话记录与缩略图、下载与处理状态（说明见 [docs/features/multimedia-logs.md](docs/features/multimedia-logs.md)）
 
 ## 快速开始
 

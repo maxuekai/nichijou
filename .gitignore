@@ -21,6 +21,8 @@ Thumbs.db
 # Logs
 *.log
 
-docs/
+docs/*
+!docs/features/
+!docs/features/**
 .cursor/
 skills/

@@ -165,9 +165,7 @@ export function ModelsPage() {
   async function loadModels() {
     setLoadError(null);
     try {
-      console.log("[ModelsPage] Loading models...");
       const data = await api.getModels();
-      console.log("[ModelsPage] Received data:", data);
       setModels(data.models);
       setActiveModelId(data.activeModelId);
     } catch (e) {

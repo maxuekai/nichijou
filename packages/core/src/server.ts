@@ -875,18 +875,14 @@ export class NichijouServer {
 
       // --- Models API ---
       if (path === "/api/models" && method === "GET") {
-        console.log("[Server] Getting models...");
         const models = this.butler.modelManager.getAllModels();
-        console.log("[Server] Found models:", models.length, models);
         const activeModelId = this.butler.modelManager.getActiveModel()?.id || '';
-        console.log("[Server] Active model ID:", activeModelId);
-        
+
         // 隐藏敏感信息
-        const safeModels = models.map(m => ({
+        const safeModels = models.map((m) => ({
           ...m,
-          apiKey: m.apiKey ? "***" : ""
+          apiKey: m.apiKey ? "***" : "",
         }));
-        console.log("[Server] Returning safe models:", safeModels);
         this.json(res, { models: safeModels, activeModelId });
         return;
       }
