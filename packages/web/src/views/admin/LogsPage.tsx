@@ -5,7 +5,10 @@ import {
   TrashIcon,
   ClockIcon as HeroClockIcon,
 } from "@heroicons/react/24/outline";
+import type { ConversationLogWithMedia, MediaContent } from "@nichijou/shared";
 import { createIconWrapper } from "../../components/ui/Icon";
+import { MediaContentSection, ProcessedMediaInfo } from "../../components/multimedia";
+import { api } from "../../api";
 
 // 创建包装过的图标组件
 const ChevronIcon = createIconWrapper(ChevronDownIcon);
@@ -13,28 +16,19 @@ const ViewIcon = createIconWrapper(EyeIcon);
 const DeleteIcon = createIconWrapper(TrashIcon);
 const ClockIcon = createIconWrapper(HeroClockIcon);
 
-interface ConversationLog {
-  id: number;
-  memberId: string;
-  memberName: string;
-  userInput: string;
-  finalReply: string;
-  events: string;
-  createdAt: string;
-}
-
 interface ParsedEvent {
   type: string;
   data: Record<string, unknown>;
 }
 
 export function LogsPage() {
-  const [logs, setLogs] = useState<ConversationLog[]>([]);
+  const [logs, setLogs] = useState<ConversationLogWithMedia[]>([]);
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [filterMember, setFilterMember] = useState<string>("all");
   const [expandedToolCalls, setExpandedToolCalls] = useState<Set<string>>(new Set());
   const [showCleanupDialog, setShowCleanupDialog] = useState(false);
   const [cleanupLoading, setCleanupLoading] = useState(false);
+  const [expandedMediaLogs, setExpandedMediaLogs] = useState<Set<number>>(new Set());
 
   useEffect(() => {
     loadLogs();
@@ -46,9 +40,26 @@ export function LogsPage() {
     try {
       const res = await fetch("/api/logs");
       if (!res.ok) return;
-      const data = await res.json() as { logs: ConversationLog[] };
+      const data = await res.json() as { logs: ConversationLogWithMedia[] };
       setLogs(data.logs ?? []);
     } catch { /* ignore */ }
+  }
+
+  function toggleMediaExpansion(logId: number) {
+    setExpandedMediaLogs((prev) => {
+      const newSet = new Set(prev);
+      if (newSet.has(logId)) {
+        newSet.delete(logId);
+      } else {
+        newSet.add(logId);
+      }
+      return newSet;
+    });
+  }
+
+  function handleMediaPreview(media: MediaContent) {
+    const mediaUrl = api.getMediaFile(media.filePath);
+    window.open(mediaUrl, "_blank");
   }
 
   function toggleToolCallExpansion(logId: number, toolIndex: number) {
@@ -188,6 +199,30 @@ export function LogsPage() {
                       <p className="text-sm text-stone-700 bg-white p-3 rounded-lg border border-stone-200 whitespace-pre-wrap">
                         {log.userInput}
                       </p>
+
+                      {log.mediaContent && log.mediaContent.length > 0 && (
+                        <MediaContentSection
+                          mediaList={log.mediaContent}
+                          logId={log.id}
+                          isExpanded={expandedMediaLogs.has(log.id)}
+                          onToggleExpand={() => toggleMediaExpansion(log.id)}
+                          onPreviewMedia={handleMediaPreview}
+                        />
+                      )}
+
+                      {log.processedMedia && log.processedMedia.length > 0 && (
+                        <div className="mt-2">
+                          <p className="text-xs font-medium text-stone-500 mb-1">处理结果</p>
+                          <div className="space-y-1">
+                            {log.processedMedia.map((processed, index) => (
+                              <ProcessedMediaInfo
+                                key={`${log.id}-processed-${index}`}
+                                info={processed}
+                              />
+                            ))}
+                          </div>
+                        </div>
+                      )}
                     </div>
 
                     {events.length > 0 && (
