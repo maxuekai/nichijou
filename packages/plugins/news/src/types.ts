@@ -49,10 +49,13 @@ export interface NewsPluginConfig {
   githubCacheMinutes?: number;
 }
 
-// 工具参数类型（增加分类支持）
+// 工具参数类型（增加分类和时间支持）
 export interface NewsFetchParams {
   limit?: number;
   category?: "tech" | "entertainment" | "general" | "all";
+  days?: number; // 获取最近N天的新闻 (1-7)
+  mode?: "latest" | "daily" | "weekly"; // latest: 最新新闻, daily: 指定日期, weekly: 一周汇总
+  date?: string; // 格式: YYYY-MM-DD (仅当mode为daily时使用)
 }
 
 export interface GitHubProjectsParams {

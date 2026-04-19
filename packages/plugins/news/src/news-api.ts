@@ -163,10 +163,13 @@ async function fetchChineseNewsFromRSS(params: NewsFetchParams, config: Record<s
   // 按发布时间排序
   allArticles.sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime());
   
+  // 应用时间筛选
+  const filteredArticles = filterArticlesByTime(allArticles, params);
+  
   return {
     status: 'ok',
-    totalResults: allArticles.length,
-    articles: allArticles
+    totalResults: filteredArticles.length,
+    articles: filteredArticles
   };
 }
 
@@ -174,6 +177,9 @@ function getCacheKey(params: NewsFetchParams): string {
   return JSON.stringify({
     limit: params.limit || 5,
     category: params.category || "all",
+    days: params.days || 1,
+    mode: params.mode || "latest",
+    date: params.date || null,
   });
 }
 
@@ -181,8 +187,59 @@ function isValidCache<T>(entry: CacheEntry<T>): boolean {
   return Date.now() - entry.timestamp < entry.expireAfter;
 }
 
-function formatNewsForAI(articles: NewsArticle[], limit: number): string {
+// 时间筛选辅助函数
+function parseArticleDate(publishedAt: string): Date | null {
+  try {
+    // RSS中常见的日期格式
+    const date = new Date(publishedAt);
+    return isNaN(date.getTime()) ? null : date;
+  } catch {
+    return null;
+  }
+}
+
+function isArticleInTimeRange(article: NewsArticle, params: NewsFetchParams): boolean {
+  const publishedDate = parseArticleDate(article.publishedAt);
+  if (!publishedDate) return true; // 无法解析日期时保留文章
+
+  const now = new Date();
+  const mode = params.mode || "latest";
+  
+  if (mode === "latest") {
+    // 最新模式：获取最近N天的新闻
+    const days = params.days || 1;
+    const daysAgo = new Date();
+    daysAgo.setDate(daysAgo.getDate() - days);
+    return publishedDate >= daysAgo;
+  }
+  
+  if (mode === "daily" && params.date) {
+    // 指定日期模式：获取特定日期的新闻
+    const targetDate = new Date(params.date);
+    const dayStart = new Date(targetDate);
+    dayStart.setHours(0, 0, 0, 0);
+    const dayEnd = new Date(targetDate);
+    dayEnd.setHours(23, 59, 59, 999);
+    return publishedDate >= dayStart && publishedDate <= dayEnd;
+  }
+  
+  if (mode === "weekly") {
+    // 一周模式：获取最近7天的新闻
+    const weekAgo = new Date();
+    weekAgo.setDate(weekAgo.getDate() - 7);
+    return publishedDate >= weekAgo;
+  }
+  
+  return true; // 默认保留所有文章
+}
+
+function filterArticlesByTime(articles: NewsArticle[], params: NewsFetchParams): NewsArticle[] {
+  return articles.filter(article => isArticleInTimeRange(article, params));
+}
+
+function formatNewsForAI(articles: NewsArticle[], limit: number, params?: NewsFetchParams): string {
   const limitedArticles = articles.slice(0, limit);
+  const mode = params?.mode || "latest";
   
   const formatTime = (publishedAt: string) => {
     const date = new Date(publishedAt);
@@ -195,6 +252,51 @@ function formatNewsForAI(articles: NewsArticle[], limit: number): string {
     return date.toLocaleDateString("zh-CN", { month: "short", day: "numeric" });
   };
 
+  // 周刊模式：按日期分组
+  if (mode === "weekly") {
+    const grouped = new Map<string, NewsArticle[]>();
+    limitedArticles.forEach(article => {
+      const date = new Date(article.publishedAt);
+      const dateKey = date.toLocaleDateString("zh-CN", { month: "short", day: "numeric", weekday: "short" });
+      if (!grouped.has(dateKey)) {
+        grouped.set(dateKey, []);
+      }
+      grouped.get(dateKey)!.push(article);
+    });
+
+    const weeklyContent = Array.from(grouped.entries()).map(([date, articles]) => {
+      const dailyNews = articles.slice(0, 3).map((article, index) => {
+        const source = article.source.name;
+        const description = article.description || "暂无描述";
+        return `   ${index + 1}. 【${source}】${article.title}\n      ${description.substring(0, 80)}...`;
+      }).join("\n");
+      
+      return `📅 ${date} (${articles.length}条)\n${dailyNews}`;
+    }).join("\n\n");
+
+    return `📰 一周新闻周刊 (${limitedArticles.length} 条)：\n\n${weeklyContent}`;
+  }
+
+  // 指定日期模式
+  if (mode === "daily" && params?.date) {
+    const targetDate = new Date(params.date);
+    const dateStr = targetDate.toLocaleDateString("zh-CN", { year: "numeric", month: "long", day: "numeric", weekday: "long" });
+    
+    const newsText = limitedArticles.map((article, index) => {
+      const time = formatTime(article.publishedAt);
+      const source = article.source.name;
+      const description = article.description || "暂无描述";
+      
+      return `${index + 1}. 【${source}】${article.title}
+   发布时间: ${time}
+   摘要: ${description}
+   链接: ${article.url}`;
+    }).join("\n\n");
+
+    return `📰 ${dateStr} 新闻回顾 (${limitedArticles.length} 条)：\n\n${newsText}`;
+  }
+
+  // 默认模式（最新新闻）
   const newsText = limitedArticles.map((article, index) => {
     const time = formatTime(article.publishedAt);
     const source = article.source.name;
@@ -206,9 +308,10 @@ function formatNewsForAI(articles: NewsArticle[], limit: number): string {
    链接: ${article.url}`;
   }).join("\n\n");
 
-  const summary = `📰 获取到 ${limitedArticles.length} 条新闻：\n\n${newsText}`;
+  const modeText = mode === "latest" ? 
+    (params?.days && params.days > 1 ? `最近${params.days}天` : "最新") : "相关";
   
-  return summary;
+  return `📰 ${modeText}新闻 (${limitedArticles.length} 条)：\n\n${newsText}`;
 }
 
 export async function fetchNews(
@@ -223,7 +326,7 @@ export async function fetchNews(
   if (config.enableCache !== false) {
     const cached = newsCache.get(cacheKey);
     if (cached && isValidCache(cached)) {
-      const formattedNews = formatNewsForAI(cached.data.articles, params.limit || 5);
+      const formattedNews = formatNewsForAI(cached.data.articles, params.limit || 5, params);
       return { content: `${formattedNews}\n\n📝 数据来自缓存（${Math.floor((Date.now() - cached.timestamp) / 60000)}分钟前）` };
     }
   }
@@ -258,7 +361,7 @@ export async function fetchNews(
     }
 
     // 格式化返回给 AI
-    const formattedNews = formatNewsForAI(newsData.articles, params.limit || 5);
+    const formattedNews = formatNewsForAI(newsData.articles, params.limit || 5, params);
     return { content: `${formattedNews}\n\n📡 数据来源：免费RSS源` };
     
   } catch (error) {
@@ -270,7 +373,7 @@ export async function fetchNews(
   if (config.enableCache !== false) {
     const cached = newsCache.get(cacheKey);
     if (cached) {
-      const formattedNews = formatNewsForAI(cached.data.articles, params.limit || 5);
+      const formattedNews = formatNewsForAI(cached.data.articles, params.limit || 5, params);
       const cacheAge = Math.floor((Date.now() - cached.timestamp) / 60000);
       return { 
         content: `⚠️ 获取最新新闻失败（${errorMessage}），显示缓存内容：\n\n${formattedNews}\n\n📝 缓存时间：${cacheAge}分钟前` 

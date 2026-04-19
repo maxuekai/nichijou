@@ -20,7 +20,7 @@ export default definePlugin({
   id: "news",
   name: "新闻助手", 
   description: "获取最新中文新闻、娱乐文化资讯和 GitHub 热门 AI 项目信息，涵盖科技、影视、热点等多元内容",
-  version: "0.1.2",
+  version: "0.1.3",
 
   configSchema: {
     githubHotness: {
@@ -59,8 +59,8 @@ export default definePlugin({
     {
       name: "news_fetch", 
       description:
-        "获取最新中文新闻和娱乐资讯，支持按类型筛选。科技类：IT之家、36氪、少数派、爱范儿；" +
-        "综合类：网易新闻；娱乐类：豆瓣影评、知乎日报。可指定category参数获取特定类型新闻。",
+        "获取中文新闻和娱乐资讯，支持按类型和时间筛选。科技类：IT之家、36氪、少数派、爱范儿；" +
+        "综合类：网易新闻；娱乐类：豆瓣影评、知乎日报。支持最新新闻、指定日期回顾、一周新闻周刊等模式。",
       parameters: {
         type: "object",
         properties: {
@@ -75,6 +75,24 @@ export default definePlugin({
             description: "新闻类型: tech(科技)、entertainment(娱乐)、general(综合)、all(全部)",
             enum: ["tech", "entertainment", "general", "all"],
             default: "all",
+          },
+          days: {
+            type: "number",
+            description: "获取最近N天的新闻，仅在mode为latest时生效",
+            minimum: 1,
+            maximum: 7,
+            default: 1,
+          },
+          mode: {
+            type: "string",
+            description: "获取模式: latest(最新)、daily(指定日期)、weekly(一周汇总)",
+            enum: ["latest", "daily", "weekly"],
+            default: "latest",
+          },
+          date: {
+            type: "string",
+            description: "指定日期(YYYY-MM-DD)，仅在mode为daily时生效",
+            pattern: "^\\d{4}-\\d{2}-\\d{2}$",
           },
         },
         required: [],
