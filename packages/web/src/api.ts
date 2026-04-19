@@ -1,4 +1,4 @@
-import type { ConversationLogWithMedia } from "@nichijou/shared";
+import type { ConversationLogWithMedia, MediaContent, ProcessedMediaInfo } from "@nichijou/shared";
 
 const BASE = "/api";
 
@@ -150,8 +150,10 @@ export const api = {
       pid: number;
     }>("/system-info"),
 
-  getLogs: () =>
-    request<{ logs: ConversationLogWithMedia[] }>("/logs"),
+  getLogs: async (): Promise<ConversationLogWithMedia[]> => {
+    const response = await request<{ logs: ConversationLogWithMedia[] }>("/logs");
+    return response.logs;
+  },
 
   getMediaFile: (filePath: string) => `${BASE}/media/${encodeURIComponent(filePath)}`,
 
