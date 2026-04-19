@@ -1,6 +1,11 @@
 import BetterSqlite3 from "better-sqlite3";
 import type { StorageManager } from "../storage/storage.js";
-import type { Reminder } from "@nichijou/shared";
+import type {
+  Reminder,
+  ConversationLogWithMedia,
+  MediaContent,
+  ProcessedMediaInfo,
+} from "@nichijou/shared";
 
 export interface ChatRecord {
   id: number;
@@ -28,6 +33,7 @@ export class Database {
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
     this.migrate();
+    this.ensureMultimediaLogColumns();
   }
 
   private migrate(): void {
@@ -84,9 +90,12 @@ export class Database {
       CREATE TABLE IF NOT EXISTS conversation_logs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         member_id TEXT NOT NULL,
+        member_name TEXT,
         user_input TEXT NOT NULL,
         final_reply TEXT NOT NULL,
         events TEXT NOT NULL,
+        media_content TEXT,
+        processed_media TEXT,
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
 
@@ -168,6 +177,28 @@ export class Database {
       CREATE INDEX IF NOT EXISTS idx_ref_referenced
         ON message_references(referenced_message_id);
     `);
+  }
+
+  /** 为已有库补齐对话日志的多媒体与展示名字段（幂等） */
+  private ensureMultimediaLogColumns(): void {
+    const columns = ["member_name", "media_content", "processed_media"] as const;
+    for (const col of columns) {
+      try {
+        this.db.exec(`ALTER TABLE conversation_logs ADD COLUMN ${col} TEXT;`);
+      } catch {
+        // 列已存在或其他可忽略错误
+      }
+    }
+  }
+
+  private parseJsonColumn<T>(raw: string | null | undefined, label: string): T | undefined {
+    if (raw == null || raw === "") return undefined;
+    try {
+      return JSON.parse(raw) as T;
+    } catch (error) {
+      console.error(`[Database] 解析 ${label} JSON 失败`, error);
+      return undefined;
+    }
   }
 
   saveChat(memberId: string, role: string, content: string, toolCalls?: string, toolCallId?: string): void {
@@ -324,6 +355,87 @@ export class Database {
         events: string;
         createdAt: string;
       }>;
+  }
+
+  /** 保存带媒体信息的对话日志 */
+  saveConversationLogWithMedia(
+    memberId: string,
+    memberName: string,
+    userInput: string,
+    finalReply: string,
+    events: string,
+    mediaContent?: MediaContent[],
+    processedMedia?: ProcessedMediaInfo[],
+  ): number {
+    let mediaJson: string | null = null;
+    let processedJson: string | null = null;
+    try {
+      if (mediaContent !== undefined) mediaJson = JSON.stringify(mediaContent);
+    } catch (error) {
+      console.error("[Database] 序列化 mediaContent 失败", error);
+    }
+    try {
+      if (processedMedia !== undefined) processedJson = JSON.stringify(processedMedia);
+    } catch (error) {
+      console.error("[Database] 序列化 processedMedia 失败", error);
+    }
+
+    const stmt = this.db.prepare(`
+      INSERT INTO conversation_logs (
+        member_id, member_name, user_input, final_reply, events,
+        media_content, processed_media, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    `);
+
+    const result = stmt.run(
+      memberId,
+      memberName,
+      userInput,
+      finalReply,
+      events,
+      mediaJson,
+      processedJson,
+    );
+
+    return Number(result.lastInsertRowid);
+  }
+
+  /** 获取带媒体信息的对话日志 */
+  getConversationLogsWithMedia(limit = 50): ConversationLogWithMedia[] {
+    const stmt = this.db.prepare(`
+      SELECT
+        id, member_id as memberId, member_name as memberName,
+        user_input as userInput, final_reply as finalReply,
+        events, created_at as createdAt,
+        media_content as mediaContentJson, processed_media as processedMediaJson
+      FROM conversation_logs
+      ORDER BY created_at DESC
+      LIMIT ?
+    `);
+
+    const rows = stmt.all(limit) as Array<{
+      id: number;
+      memberId: string;
+      memberName: string | null;
+      userInput: string;
+      finalReply: string;
+      events: string;
+      createdAt: string;
+      mediaContentJson: string | null;
+      processedMediaJson: string | null;
+    }>;
+
+    return rows.map((row) => ({
+      id: row.id,
+      memberId: row.memberId,
+      memberName: row.memberName ?? row.memberId,
+      userInput: row.userInput,
+      finalReply: row.finalReply,
+      events: row.events,
+      createdAt: row.createdAt,
+      mediaContent: this.parseJsonColumn<MediaContent[]>(row.mediaContentJson, "media_content"),
+      processedMedia: this.parseJsonColumn<ProcessedMediaInfo[]>(row.processedMediaJson, "processed_media"),
+    }));
   }
 
   // --- Reminders ---
