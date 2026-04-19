@@ -1,6 +1,8 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { readFileSync, existsSync, statfsSync, readdirSync } from "node:fs";
-import { join, extname } from "node:path";
+import { readFileSync, existsSync, statfsSync, readdirSync, createReadStream } from "node:fs";
+import { stat } from "node:fs/promises";
+import { join, extname, resolve as pathResolve, sep } from "node:path";
+import sharp from "sharp";
 import { fileURLToPath } from "node:url";
 import { hostname, platform, release, arch, cpus, totalmem, freemem, uptime as osUptime, loadavg } from "node:os";
 import { getZonedDateTimeParts } from "@nichijou/shared";
@@ -29,6 +31,21 @@ const MIME_TYPES: Record<string, string> = {
   ".woff": "font/woff",
   ".woff2": "font/woff2",
 };
+
+const MEDIA_MIME_TYPES: Record<string, string> = {
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".png": "image/png",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".mp3": "audio/mpeg",
+  ".wav": "audio/wav",
+  ".mp4": "video/mp4",
+  ".webm": "video/webm",
+  ".pdf": "application/pdf",
+};
+
+const THUMBNAIL_IMAGE_EXT = new Set([".jpg", ".jpeg", ".png", ".gif", ".webp"]);
 
 const CONFIG_PATCH_KEYS = new Set([
   "llm",
@@ -326,12 +343,102 @@ export class NichijouServer {
         return;
       }
 
+      if (path.startsWith("/api/media/") && method === "GET") {
+        const mediaRoot = pathResolve(this.butler.storage.resolve("media"));
+        const tail = path.slice("/api/media/".length);
+
+        if (tail.endsWith("/thumbnail")) {
+          const relative = decodeURIComponent(tail.slice(0, -"/thumbnail".length).replace(/\+/g, " "));
+          const resolvedPath = pathResolve(mediaRoot, relative);
+          if (resolvedPath !== mediaRoot && !resolvedPath.startsWith(mediaRoot + sep)) {
+            this.json(res, { error: "Access denied" }, 403);
+            return;
+          }
+          const ext = extname(relative).toLowerCase();
+          if (!THUMBNAIL_IMAGE_EXT.has(ext)) {
+            this.json(res, { error: "Not an image file" }, 400);
+            return;
+          }
+          const reqUrl = new URL(req.url ?? "/", `http://${req.headers.host}`);
+          const sizeParam = reqUrl.searchParams.get("size") ?? "medium";
+          const sizes: Record<string, number> = { small: 64, medium: 128, large: 256 };
+          const dimension = sizes[sizeParam] ?? 128;
+          try {
+            const stats = await stat(resolvedPath);
+            if (!stats.isFile()) {
+              this.json(res, { error: "File not found" }, 404);
+              return;
+            }
+            const thumbnail = await sharp(resolvedPath)
+              .resize(dimension, dimension, { fit: "cover", position: "center" })
+              .jpeg({ quality: 80 })
+              .toBuffer();
+            res.writeHead(200, {
+              "Content-Type": "image/jpeg",
+              "Content-Length": String(thumbnail.length),
+              "Cache-Control": "public, max-age=86400",
+            });
+            res.end(thumbnail);
+          } catch (err) {
+            const code = err && typeof err === "object" && "code" in err ? (err as NodeJS.ErrnoException).code : undefined;
+            if (code === "ENOENT") {
+              this.json(res, { error: "File not found" }, 404);
+              return;
+            }
+            console.error("[Server] Thumbnail generation error:", err);
+            this.json(res, { error: "Thumbnail generation failed" }, 500);
+          }
+          return;
+        }
+
+        const relative = decodeURIComponent(tail.replace(/\+/g, " "));
+        const resolvedPath = pathResolve(mediaRoot, relative);
+        if (resolvedPath !== mediaRoot && !resolvedPath.startsWith(mediaRoot + sep)) {
+          this.json(res, { error: "Access denied" }, 403);
+          return;
+        }
+        try {
+          const stats = await stat(resolvedPath);
+          if (!stats.isFile()) {
+            this.json(res, { error: "File not found" }, 404);
+            return;
+          }
+          const ext = extname(relative).toLowerCase();
+          const mimeType = MEDIA_MIME_TYPES[ext] ?? "application/octet-stream";
+          res.writeHead(200, {
+            "Content-Type": mimeType,
+            "Content-Length": String(stats.size),
+            "Cache-Control": "public, max-age=3600",
+          });
+          const stream = createReadStream(resolvedPath);
+          stream.on("error", (streamErr) => {
+            console.error("[Server] Media stream error:", streamErr);
+            if (!res.headersSent) {
+              res.writeHead(500, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ error: "Internal server error" }));
+            } else {
+              res.destroy();
+            }
+          });
+          stream.pipe(res);
+        } catch (err) {
+          const code = err && typeof err === "object" && "code" in err ? (err as NodeJS.ErrnoException).code : undefined;
+          if (code === "ENOENT") {
+            this.json(res, { error: "File not found" }, 404);
+            return;
+          }
+          console.error("[Server] Media access error:", err);
+          this.json(res, { error: "Internal server error" }, 500);
+        }
+        return;
+      }
+
       if (path === "/api/logs" && method === "GET") {
-        const logs = this.butler.db.getAllConversationLogs(200);
+        const logs = this.butler.db.getConversationLogsWithMedia(200);
         const members = this.butler.familyManager.getMembers();
         const enriched = logs.map((log) => ({
           ...log,
-          memberName: members.find((m) => m.id === log.memberId)?.name ?? log.memberId,
+          memberName: members.find((m) => m.id === log.memberId)?.name ?? log.memberName,
         }));
         this.json(res, { logs: enriched });
         return;
