@@ -130,6 +130,43 @@ export class Database {
 
       CREATE INDEX IF NOT EXISTS idx_session_member
         ON session_states(member_id, updated_at);
+
+      -- 媒体文件表
+      CREATE TABLE IF NOT EXISTS media_files (
+        id TEXT PRIMARY KEY,
+        message_id TEXT,
+        file_path TEXT NOT NULL,
+        hash TEXT NOT NULL,
+        original_name TEXT NOT NULL,
+        mime_type TEXT NOT NULL,
+        size INTEGER NOT NULL,
+        duration REAL, -- 语音/视频时长(秒)
+        file_type TEXT NOT NULL, -- image, voice, video, file
+        ref_count INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        accessed_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_media_hash
+        ON media_files(hash);
+      CREATE INDEX IF NOT EXISTS idx_media_type
+        ON media_files(file_type, created_at);
+      CREATE INDEX IF NOT EXISTS idx_media_message
+        ON media_files(message_id);
+
+      -- 消息引用关系表
+      CREATE TABLE IF NOT EXISTS message_references (
+        id TEXT PRIMARY KEY,
+        message_id TEXT NOT NULL,
+        referenced_message_id TEXT NOT NULL,
+        reference_type TEXT NOT NULL DEFAULT 'reply',
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_ref_message
+        ON message_references(message_id);
+      CREATE INDEX IF NOT EXISTS idx_ref_referenced
+        ON message_references(referenced_message_id);
     `);
   }
 
@@ -605,6 +642,234 @@ export class Database {
     if (result.changes > 0) {
       console.log(`[Database] 清理了 ${result.changes} 条过期执行日志`);
     }
+  }
+
+  // --- 媒体文件管理 ---
+
+  /**
+   * 保存媒体文件记录
+   */
+  saveMediaFile(record: {
+    id: string;
+    messageId?: string;
+    filePath: string;
+    hash: string;
+    originalName: string;
+    mimeType: string;
+    size: number;
+    duration?: number;
+    fileType: string;
+  }): void {
+    this.db.prepare(`
+      INSERT OR REPLACE INTO media_files 
+      (id, message_id, file_path, hash, original_name, mime_type, size, duration, file_type)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      record.id,
+      record.messageId || null,
+      record.filePath,
+      record.hash,
+      record.originalName,
+      record.mimeType,
+      record.size,
+      record.duration || null,
+      record.fileType
+    );
+  }
+
+  /**
+   * 根据哈希查找媒体文件
+   */
+  getMediaFileByHash(hash: string): {
+    id: string;
+    messageId: string | null;
+    filePath: string;
+    hash: string;
+    originalName: string;
+    mimeType: string;
+    size: number;
+    duration: number | null;
+    fileType: string;
+    refCount: number;
+    createdAt: string;
+    accessedAt: string;
+  } | null {
+    return this.db.prepare(`
+      SELECT id, message_id as messageId, file_path as filePath, hash, 
+             original_name as originalName, mime_type as mimeType, 
+             size, duration, file_type as fileType, ref_count as refCount,
+             created_at as createdAt, accessed_at as accessedAt
+      FROM media_files WHERE hash = ?
+    `).get(hash) as any;
+  }
+
+  /**
+   * 更新文件访问时间
+   */
+  updateMediaFileAccess(hash: string): void {
+    this.db.prepare(`
+      UPDATE media_files 
+      SET accessed_at = datetime('now')
+      WHERE hash = ?
+    `).run(hash);
+  }
+
+  /**
+   * 增加文件引用计数
+   */
+  incrementMediaRefCount(hash: string): void {
+    this.db.prepare(`
+      UPDATE media_files 
+      SET ref_count = ref_count + 1, accessed_at = datetime('now')
+      WHERE hash = ?
+    `).run(hash);
+  }
+
+  /**
+   * 减少文件引用计数
+   */
+  decrementMediaRefCount(hash: string): void {
+    this.db.prepare(`
+      UPDATE media_files 
+      SET ref_count = MAX(0, ref_count - 1)
+      WHERE hash = ?
+    `).run(hash);
+  }
+
+  /**
+   * 获取过期的媒体文件
+   */
+  getExpiredMediaFiles(daysBefore: number): Array<{
+    id: string;
+    filePath: string;
+    hash: string;
+    originalName: string;
+    refCount: number;
+  }> {
+    return this.db.prepare(`
+      SELECT id, file_path as filePath, hash, original_name as originalName, ref_count as refCount
+      FROM media_files 
+      WHERE datetime(accessed_at) < datetime('now', '-${daysBefore} days')
+      AND ref_count <= 0
+      ORDER BY accessed_at ASC
+    `).all() as any;
+  }
+
+  /**
+   * 删除媒体文件记录
+   */
+  deleteMediaFile(hash: string): void {
+    this.db.prepare(`DELETE FROM media_files WHERE hash = ?`).run(hash);
+  }
+
+  /**
+   * 获取媒体文件统计信息
+   */
+  getMediaStats(): {
+    totalFiles: number;
+    totalSize: number;
+    imageCount: number;
+    voiceCount: number;
+    videoCount: number;
+    fileCount: number;
+  } {
+    const result = this.db.prepare(`
+      SELECT 
+        COUNT(*) as totalFiles,
+        SUM(size) as totalSize,
+        SUM(CASE WHEN file_type = 'image' THEN 1 ELSE 0 END) as imageCount,
+        SUM(CASE WHEN file_type = 'voice' THEN 1 ELSE 0 END) as voiceCount,
+        SUM(CASE WHEN file_type = 'video' THEN 1 ELSE 0 END) as videoCount,
+        SUM(CASE WHEN file_type = 'file' THEN 1 ELSE 0 END) as fileCount
+      FROM media_files
+    `).get() as any;
+
+    return {
+      totalFiles: result.totalFiles || 0,
+      totalSize: result.totalSize || 0,
+      imageCount: result.imageCount || 0,
+      voiceCount: result.voiceCount || 0,
+      videoCount: result.videoCount || 0,
+      fileCount: result.fileCount || 0,
+    };
+  }
+
+  // --- 消息引用管理 ---
+
+  /**
+   * 保存消息引用关系
+   */
+  saveMessageReference(reference: {
+    id: string;
+    messageId: string;
+    referencedMessageId: string;
+    referenceType?: string;
+  }): void {
+    this.db.prepare(`
+      INSERT OR REPLACE INTO message_references 
+      (id, message_id, referenced_message_id, reference_type)
+      VALUES (?, ?, ?, ?)
+    `).run(
+      reference.id,
+      reference.messageId,
+      reference.referencedMessageId,
+      reference.referenceType || 'reply'
+    );
+  }
+
+  /**
+   * 获取消息的引用关系
+   */
+  getMessageReferences(messageId: string): Array<{
+    id: string;
+    messageId: string;
+    referencedMessageId: string;
+    referenceType: string;
+    createdAt: string;
+  }> {
+    return this.db.prepare(`
+      SELECT id, message_id as messageId, referenced_message_id as referencedMessageId,
+             reference_type as referenceType, created_at as createdAt
+      FROM message_references
+      WHERE message_id = ?
+      ORDER BY created_at ASC
+    `).all(messageId) as any;
+  }
+
+  /**
+   * 获取引用了某条消息的消息列表
+   */
+  getReferencesToMessage(referencedMessageId: string): Array<{
+    id: string;
+    messageId: string;
+    referencedMessageId: string;
+    referenceType: string;
+    createdAt: string;
+  }> {
+    return this.db.prepare(`
+      SELECT id, message_id as messageId, referenced_message_id as referencedMessageId,
+             reference_type as referenceType, created_at as createdAt
+      FROM message_references
+      WHERE referenced_message_id = ?
+      ORDER BY created_at ASC
+    `).all(referencedMessageId) as any;
+  }
+
+  /**
+   * 清理过期的媒体文件记录
+   */
+  cleanOldMediaFiles(daysBefore: number): number {
+    const result = this.db.prepare(`
+      DELETE FROM media_files 
+      WHERE datetime(accessed_at) < datetime('now', '-${daysBefore} days')
+      AND ref_count <= 0
+    `).run();
+    
+    if (result.changes > 0) {
+      console.log(`[Database] 清理了 ${result.changes} 条过期媒体文件记录`);
+    }
+    
+    return result.changes;
   }
 
   close(): void {

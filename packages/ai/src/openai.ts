@@ -1,5 +1,7 @@
-import type { Message, ToolCall, ToolDefinition } from "@nichijou/shared";
+import type { Message, ToolCall, ToolDefinition, MultimodalMessage, MediaContent } from "@nichijou/shared";
 import { LLMError } from "@nichijou/shared";
+import { promises as fs } from "node:fs";
+import { join } from "node:path";
 import type {
   ChatRequest,
   ChatResponse,
@@ -9,9 +11,16 @@ import type {
   Usage,
 } from "./types.js";
 
+interface OpenAIContentPart {
+  type: 'text' | 'image_url' | 'audio';
+  text?: string;
+  image_url?: { url: string; detail?: 'low' | 'high' | 'auto' };
+  audio?: { format: string; data: string };
+}
+
 interface OpenAIMessage {
   role: string;
-  content: string | null;
+  content: string | OpenAIContentPart[] | null;
   name?: string;
   tool_call_id?: string;
   tool_calls?: OpenAIToolCall[];
@@ -32,17 +41,112 @@ interface OpenAITool {
   };
 }
 
-function toOpenAIMessages(messages: Message[]): OpenAIMessage[] {
-  return messages.map((m) => {
-    const msg: OpenAIMessage = { role: m.role, content: m.content };
+/** Convert image file to base64 data URL */
+async function imageToBase64DataUrl(filePath: string, mimeType?: string): Promise<string> {
+  const buffer = await fs.readFile(filePath);
+  const type = mimeType || 'image/jpeg';
+  const base64 = buffer.toString('base64');
+  return `data:${type};base64,${base64}`;
+}
+
+/** Convert audio file to base64 */
+async function audioToBase64(filePath: string, format?: string): Promise<string> {
+  const buffer = await fs.readFile(filePath);
+  return buffer.toString('base64');
+}
+
+/** Convert MediaContent to OpenAI content parts */
+async function mediaContentToParts(mediaList: MediaContent[]): Promise<OpenAIContentPart[]> {
+  const parts: OpenAIContentPart[] = [];
+  
+  for (const media of mediaList) {
+    try {
+      switch (media.type) {
+        case 'image':
+          const imageUrl = await imageToBase64DataUrl(media.filePath, media.mimeType);
+          parts.push({
+            type: 'image_url',
+            image_url: { 
+              url: imageUrl,
+              detail: 'high' // 默认使用高质量
+            }
+          });
+          break;
+        
+        case 'voice':
+          const audioFormat = media.mimeType?.split('/')[1] || 'mp3';
+          const audioData = await audioToBase64(media.filePath, audioFormat);
+          parts.push({
+            type: 'audio',
+            audio: {
+              format: audioFormat,
+              data: audioData
+            }
+          });
+          break;
+        
+        // 文件和视频暂时不直接支持，可以转为文本描述
+        case 'file':
+        case 'video':
+          parts.push({
+            type: 'text',
+            text: `[${media.type.toUpperCase()}文件: ${media.originalName || '未知文件'}${media.size ? `, 大小: ${(media.size / 1024 / 1024).toFixed(2)}MB` : ''}]`
+          });
+          break;
+      }
+    } catch (error) {
+      console.error(`处理媒体文件失败 ${media.filePath}:`, error);
+      parts.push({
+        type: 'text',
+        text: `[媒体文件处理失败: ${media.originalName || '未知文件'}]`
+      });
+    }
+  }
+  
+  return parts;
+}
+
+async function toOpenAIMessages(messages: (Message | MultimodalMessage)[]): Promise<OpenAIMessage[]> {
+  const result: OpenAIMessage[] = [];
+  
+  for (const m of messages) {
+    const msg: OpenAIMessage = { role: m.role, content: null };
+    
+    // 处理基本字段
     if (m.name) msg.name = m.name;
     if (m.toolCallId) msg.tool_call_id = m.toolCallId;
     if (m.toolCalls && m.toolCalls.length > 0) {
       msg.tool_calls = m.toolCalls;
-      if (!msg.content) msg.content = null;
     }
-    return msg;
-  });
+    
+    // 处理内容
+    const isMultimodal = 'media' in m && m.media && m.media.length > 0;
+    
+    if (isMultimodal) {
+      // 多模态消息，构建 content parts
+      const parts: OpenAIContentPart[] = [];
+      
+      // 添加文本内容
+      if (typeof m.content === 'string' && m.content.trim()) {
+        parts.push({ type: 'text', text: m.content });
+      }
+      
+      // 添加媒体内容
+      if (m.media && m.media.length > 0) {
+        const mediaParts = await mediaContentToParts(m.media);
+        parts.push(...mediaParts);
+      }
+      
+      msg.content = parts.length > 0 ? parts : m.content;
+    } else {
+      // 纯文本消息
+      msg.content = m.content;
+    }
+    
+    result.push(msg);
+  }
+  
+  return result;
 }
 
 function toOpenAITools(tools: ToolDefinition[]): OpenAITool[] {
@@ -88,7 +192,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
   }
 
   async chat(request: ChatRequest): Promise<ChatResponse> {
-    const body = this.buildRequestBody(request, false);
+    const body = await this.buildRequestBody(request, false);
     const data = await this.fetchJSON("/chat/completions", body);
 
     const choices = data.choices as Record<string, unknown>[];
@@ -104,7 +208,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
   }
 
   async *chatStream(request: ChatRequest): AsyncIterable<StreamEvent> {
-    const body = this.buildRequestBody(request, true);
+    const body = await this.buildRequestBody(request, true);
     const response = await this.fetchRaw("/chat/completions", body);
 
     if (!response.body) {
@@ -208,13 +312,13 @@ export class OpenAICompatibleProvider implements LLMProvider {
     yield { type: "done", message, usage, finishReason };
   }
 
-  private buildRequestBody(
+  private async buildRequestBody(
     request: ChatRequest,
     stream: boolean,
-  ): Record<string, unknown> {
+  ): Promise<Record<string, unknown>> {
     const body: Record<string, unknown> = {
       model: request.model ?? this.config.model,
-      messages: toOpenAIMessages(request.messages),
+      messages: await toOpenAIMessages(request.messages),
       stream,
     };
     if (request.temperature !== undefined) body.temperature = request.temperature;

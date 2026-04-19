@@ -1,15 +1,33 @@
 import { mkdirSync, existsSync, readFileSync, writeFileSync, readdirSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
+import type { MultimediaConfig } from "@nichijou/shared";
+import { MediaManager, type MediaStorageConfig } from "./media-manager.js";
 
 const DEFAULT_DATA_DIR = join(homedir(), ".nichijou");
 
 export class StorageManager {
   readonly dataDir: string;
+  private _mediaManager?: MediaManager;
 
   constructor(dataDir?: string) {
     this.dataDir = dataDir ?? DEFAULT_DATA_DIR;
     this.ensureDirectories();
+  }
+
+  /** 获取媒体管理器实例 */
+  getMediaManager(database: any, config?: MultimediaConfig): MediaManager {
+    if (!this._mediaManager && database) {
+      const storageConfig: MediaStorageConfig = {
+        basePath: config?.storage?.base_path || join(this.dataDir, 'media'),
+        maxFileSizeMB: config?.storage?.max_file_size_mb || 50,
+        cleanupDays: config?.storage?.cleanup_days || 30,
+        enableDeduplication: true,
+      };
+      
+      this._mediaManager = new MediaManager(this, database, storageConfig);
+    }
+    return this._mediaManager!;
   }
 
   private ensureDirectories(): void {

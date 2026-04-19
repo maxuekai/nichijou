@@ -37,6 +37,45 @@ export interface MediaItem {
   fileName?: string;
 }
 
+/** Enhanced media content with metadata */
+export interface MediaContent {
+  type: 'image' | 'voice' | 'file' | 'video';
+  filePath: string;
+  originalName?: string;
+  mimeType?: string;
+  size?: number;
+  duration?: number; // 语音/视频时长(秒)
+  hash?: string; // 文件哈希，用于去重
+  downloadedAt?: string; // 下载时间戳
+}
+
+/** Reference/reply message content */
+export interface ReferenceContent {
+  messageId: string;
+  content: string;
+  mediaContent?: MediaContent[];
+  timestamp: number;
+  authorId: string;
+  authorName?: string;
+}
+
+/** Content parts for multimodal messages (OpenAI style) */
+export type MessageContentPart = 
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string; detail?: 'low' | 'high' | 'auto' } }
+  | { type: 'audio'; audio: { format: string; data: string } };
+
+/** Enhanced message with multimodal support */
+export interface MultimodalMessage {
+  role: "system" | "user" | "assistant" | "tool";
+  content: string | MessageContentPart[];
+  name?: string;
+  toolCallId?: string;
+  toolCalls?: ToolCall[];
+  media?: MediaContent[];
+  references?: ReferenceContent[];
+}
+
 /** Family & member types */
 
 export interface Family {
@@ -139,14 +178,19 @@ export interface InboundMessage {
   memberId: string;
   text: string;
   media?: MediaItem[];
+  mediaContent?: MediaContent[];
+  references?: ReferenceContent[];
   contextToken?: string;
   timestamp?: number;
+  messageId?: string;
 }
 
 export interface OutboundMessage {
   memberId: string;
   text: string;
   media?: MediaItem[];
+  mediaContent?: MediaContent[];
+  replyToMessageId?: string;
 }
 
 /** Reminder (独立提醒事项，持久化到 SQLite) */
@@ -159,6 +203,53 @@ export interface Reminder {
   channel: "wechat" | "dashboard" | "both";
   done: boolean;
   createdAt: string;
+}
+
+/** Multimedia configuration types */
+
+export interface MultimediaConfig {
+  providers: {
+    image: 'claude' | 'openai' | 'auto';
+    voice: 'openai' | 'transcribe_only' | 'auto';
+    mixed: 'openai' | 'claude' | 'auto';
+  };
+  voice_processing: {
+    strategy: 'multimodal_native' | 'transcribe_only' | 'both_options';
+    transcription_language: string;
+  };
+  storage: {
+    base_path: string;
+    cleanup_days: number;
+    max_file_size_mb: number;
+  };
+  references: {
+    max_thread_depth: number;
+    include_media_in_context: boolean;
+  };
+}
+
+/** Media processing result */
+export interface MediaProcessingResult {
+  success: boolean;
+  content?: MediaContent;
+  error?: string;
+  transcription?: string; // 语音转录结果
+  description?: string; // 图片描述
+}
+
+/** Thread context for reference messages */
+export interface ThreadContext {
+  threadId: string;
+  messages: Array<{
+    messageId: string;
+    content: string;
+    mediaContent?: MediaContent[];
+    timestamp: number;
+    authorId: string;
+    authorName?: string;
+    isReference?: boolean;
+  }>;
+  depth: number;
 }
 
 /** Channel status */

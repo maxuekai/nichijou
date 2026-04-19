@@ -1,9 +1,24 @@
 import { createProvider } from "@nichijou/ai";
 import type { LLMProvider } from "@nichijou/ai";
+import { 
+  MultimodalProviderSelector, 
+  createWhisperService,
+  type MultimodalProviderConfig 
+} from "@nichijou/ai";
 import { AgentSession, createAgentSession } from "@nichijou/agent";
 import type { AgentEvent } from "@nichijou/agent";
 import { getZonedDateTimeParts } from "@nichijou/shared";
-import type { FamilyMember, InboundMessage, ToolDefinition, Routine, RoutineAction, Plan } from "@nichijou/shared";
+import type { 
+  FamilyMember, 
+  InboundMessage, 
+  ToolDefinition, 
+  Routine, 
+  RoutineAction, 
+  Plan,
+  MediaContent,
+  ReferenceContent,
+  ThreadContext
+} from "@nichijou/shared";
 import { hostname, platform, arch, cpus, totalmem, freemem, uptime as osUptime, loadavg } from "node:os";
 import type { Channel } from "./gateway/channel.js";
 import type { ChannelStatus } from "@nichijou/shared";
@@ -18,12 +33,15 @@ import { createRoutineTools } from "./tools/routine-tools.js";
 import { createMemoryTools } from "./tools/memory-tools.js";
 import { createReminderTools } from "./tools/reminder-tools.js";
 import { createMessageTools } from "./tools/message-tools.js";
+import { createDownloadTools } from "./tools/download-tools.js";
 import { ReminderScheduler } from "./reminder/reminder-scheduler.js";
 import { ActivityReminderScheduler } from "./reminder/activity-reminder.js";
 import { PluginHost } from "./plugin-host/plugin-host.js";
 import { resolvePluginImportUrl } from "./plugins/resolve-plugin.js";
 import { ActionExecutor } from "./routine/action-executor.js";
 import { ModelManager } from "./services/model-manager.js";
+import { ThreadContextBuilder } from "./services/thread-context-builder.js";
+import { ErrorHandler } from "./services/error-handler.js";
 import type { AgentContext } from "./types/agent.js";
 
 interface WeChatConnection {
@@ -64,6 +82,9 @@ export class ButlerService {
   private sessions = new Map<string, AgentSession>();
   private _wechatChannel: WeChatChannelLike | null = null;
   private interviewSessions = new Map<string, Array<{ role: "user" | "assistant" | "system"; content: string }>>();
+  private multimodalSelector?: MultimodalProviderSelector;
+  private threadContextBuilder: ThreadContextBuilder;
+  private errorHandler: ErrorHandler;
 
   constructor(dataDir?: string) {
     this.storage = new StorageManager(dataDir);
@@ -84,6 +105,24 @@ export class ButlerService {
 
     // 执行配置迁移
     this.modelManager.migrateFromLegacyConfig();
+
+    // 初始化多模态提供商选择器
+    this.initializeMultimodalSelector();
+
+    // 初始化线程上下文构建器
+    this.threadContextBuilder = new ThreadContextBuilder({
+      database: this.db,
+      multimediaConfig: this.config.getMultimediaConfig(),
+    });
+
+    // 初始化错误处理器
+    this.errorHandler = new ErrorHandler({
+      enableTextFallback: true,
+      enableMediaSkip: true,
+      enableReferenceFallback: true,
+      maxRetries: 3,
+      retryDelayMs: 2000,
+    });
 
     this.gateway.onMessage(this.handleMessage.bind(this));
     this.gateway.onUnboundMessage(this.handleUnboundMessage.bind(this));
@@ -228,6 +267,7 @@ export class ButlerService {
         (id) => this.clearMemberSession(id),
         () => this.currentMemberId
       ),
+      ...createDownloadTools(this), // 添加下载任务管理工具
       ...this.createDebugTools(), // 添加调试工具
       ...this.pluginHost.getAllTools(),
     ];
@@ -1271,6 +1311,252 @@ ${conversationText}
   }
 
   /**
+   * 初始化多模态提供商选择器
+   */
+  private initializeMultimodalSelector(): void {
+    try {
+      const multimediaConfig = this.config.getMultimediaConfig();
+      const baseProvider = this.getProvider();
+      
+      if (!baseProvider) {
+        console.warn('[Butler] 无法初始化多模态选择器：基础提供商未设置');
+        return;
+      }
+
+      // 创建转录服务（如果配置了 OpenAI API Key）
+      let transcriptionService;
+      const llmConfig = this.config.get().llm;
+      if (llmConfig.apiKey && (llmConfig.baseUrl.includes('openai') || llmConfig.baseUrl.includes('api.openai.com'))) {
+        transcriptionService = createWhisperService({
+          apiKey: llmConfig.apiKey,
+          baseUrl: llmConfig.baseUrl.replace('/v1', ''),
+        });
+      }
+
+      const multimodalConfig: MultimodalProviderConfig = {
+        providers: {
+          openai: baseProvider,
+          claude: baseProvider, // 如果需要支持 Claude，这里可以配置专门的 Claude 提供商
+        },
+        multimedia: multimediaConfig,
+        transcriptionService,
+      };
+
+      this.multimodalSelector = new MultimodalProviderSelector(multimodalConfig);
+      console.log('[Butler] 多模态提供商选择器初始化成功');
+    } catch (error) {
+      console.error('[Butler] 初始化多模态选择器失败:', error);
+    }
+  }
+
+  /**
+   * 构建包含多媒体和引用上下文的增强消息
+   */
+  private async buildEnhancedMessage(msg: InboundMessage, member: FamilyMember): Promise<string> {
+    const { display, iso } = this.formatNow();
+    let enhancedMessage = `[系统时间更新: ${display}, ISO: ${iso}]\n\n`;
+
+    // 处理引用消息上下文
+    if (msg.references && msg.references.length > 0) {
+      enhancedMessage += await this.buildReferenceContext(msg.references, member);
+      enhancedMessage += '\n\n';
+    }
+
+    // 处理媒体内容
+    if (msg.mediaContent && msg.mediaContent.length > 0) {
+      const mediaContext = await this.buildMediaContext(msg.mediaContent);
+      if (mediaContext) {
+        enhancedMessage += mediaContext + '\n\n';
+      }
+    }
+
+    // 添加用户文本消息
+    enhancedMessage += msg.text;
+
+    return enhancedMessage;
+  }
+
+  /**
+   * 构建引用消息的上下文
+   */
+  private async buildReferenceContext(references: ReferenceContent[], member: FamilyMember): Promise<string> {
+    try {
+      // 使用线程上下文构建器构建完整的对话线程
+      const threads = await this.threadContextBuilder.buildThreadContext(references);
+      
+      if (threads.length === 0) {
+        // 回退到简单的引用处理
+        return this.buildSimpleReferenceContext(references);
+      }
+
+      // 简化线程上下文以节省 token
+      const simplifiedThreads = this.threadContextBuilder.simplifyThreadContext(threads, 8);
+      
+      // 格式化为可读字符串
+      const formattedContext = this.threadContextBuilder.formatThreadContext(simplifiedThreads);
+      
+      // 添加统计信息
+      const stats = this.threadContextBuilder.getThreadStats(simplifiedThreads);
+      let contextWithStats = formattedContext;
+      
+      if (stats.totalMessages > 0) {
+        contextWithStats += `[线程统计: ${stats.totalThreads}个线程, ${stats.totalMessages}条消息`;
+        if (stats.mediaCount > 0) {
+          contextWithStats += `, ${stats.mediaCount}个媒体文件`;
+        }
+        contextWithStats += ']\n';
+      }
+
+      return contextWithStats;
+
+    } catch (error) {
+      console.error('[Butler] 构建引用上下文失败:', error);
+      // 回退到简单的引用处理
+      return this.buildSimpleReferenceContext(references);
+    }
+  }
+
+  /**
+   * 构建简单的引用消息上下文（回退方案）
+   */
+  private buildSimpleReferenceContext(references: ReferenceContent[]): string {
+    let context = '[引用消息上下文]\n';
+    
+    for (const ref of references) {
+      context += `- 引用消息: "${ref.content}"\n`;
+      
+      if (ref.mediaContent && ref.mediaContent.length > 0) {
+        for (const media of ref.mediaContent) {
+          context += `  - 包含${media.type}文件: ${media.originalName || '未知文件'}\n`;
+        }
+      }
+    }
+    
+    return context;
+  }
+
+  /**
+   * 构建媒体内容的上下文描述
+   */
+  private async buildMediaContext(mediaContent: MediaContent[]): Promise<string> {
+    let context = '[媒体内容]\n';
+    
+    for (const media of mediaContent) {
+      switch (media.type) {
+        case 'image':
+          context += `- 图片: ${media.originalName || '未知图片'}\n`;
+          // 这里可以添加图像识别或 OCR 结果
+          break;
+          
+        case 'voice':
+          context += `- 语音: ${media.originalName || '未知语音'}`;
+          if (media.duration) {
+            context += ` (时长: ${media.duration}秒)`;
+          }
+          context += '\n';
+          
+          // 如果配置了语音转录，尝试转录
+          if (this.multimodalSelector) {
+            try {
+              const transcription = await this.transcribeVoice(media);
+              if (transcription) {
+                context += `  转录内容: ${transcription}\n`;
+              }
+            } catch (error) {
+              console.error('[Butler] 语音转录失败:', error);
+              context += `  (语音转录失败)\n`;
+            }
+          }
+          break;
+          
+        case 'file':
+          context += `- 文件: ${media.originalName || '未知文件'}`;
+          if (media.size) {
+            const sizeMB = (media.size / 1024 / 1024).toFixed(2);
+            context += ` (${sizeMB}MB)`;
+          }
+          context += '\n';
+          break;
+          
+        case 'video':
+          context += `- 视频: ${media.originalName || '未知视频'}`;
+          if (media.duration) {
+            context += ` (时长: ${media.duration}秒)`;
+          }
+          context += '\n';
+          break;
+      }
+    }
+    
+    return context;
+  }
+
+  /**
+   * 转录语音文件
+   */
+  private async transcribeVoice(media: MediaContent): Promise<string | null> {
+    if (!this.multimodalSelector) {
+      return null;
+    }
+
+    const config = this.config.getMultimediaConfig();
+    if (config.voice_processing.strategy === 'multimodal_native') {
+      // 多模态原生处理，不需要预转录
+      return null;
+    }
+
+    try {
+      // 使用转录服务
+      const transcriptionService = (this.multimodalSelector as any).config?.transcriptionService;
+      if (!transcriptionService) {
+        return null;
+      }
+
+      return await transcriptionService.transcribe(
+        media.filePath,
+        config.voice_processing.transcription_language
+      );
+    } catch (error) {
+      console.error('[Butler] 语音转录失败:', error);
+      return null;
+    }
+  }
+
+  /**
+   * 获取当前成员ID（供工具使用）
+   */
+  getCurrentMemberId(): string {
+    return this.currentMemberId || "";
+  }
+
+  /**
+   * 发送用户友好的错误消息
+   */
+  private async sendErrorMessage(member: FamilyMember, error: Error): Promise<void> {
+    const errorMessage = error.message;
+    let userFriendlyMessage = "抱歉，处理您的消息时出现了问题。";
+    
+    // 针对特定错误类型提供更有用的信息
+    if (errorMessage.includes('LLM_ERROR')) {
+      userFriendlyMessage += "大模型服务暂时不可用，请稍后重试。";
+    } else if (errorMessage.includes('AbortError') || errorMessage.includes('timeout')) {
+      userFriendlyMessage += "请求超时，请稍后重试。";
+    } else if (errorMessage.includes('tool_calls')) {
+      userFriendlyMessage += "工具调用出现问题，但您可以继续其他对话。";
+    } else if (errorMessage.includes('media') || errorMessage.includes('multimodal')) {
+      userFriendlyMessage += "多媒体处理出现问题，已切换到文本模式。";
+    } else {
+      userFriendlyMessage += "请稍后重试或联系管理员。";
+    }
+    
+    try {
+      await this.gateway.sendToMember(member.id, userFriendlyMessage);
+    } catch (sendErr) {
+      console.error(`Failed to send error message to member ${member.id}:`, sendErr);
+    }
+  }
+
+  /**
    * Handle an inbound WeChat/channel message.
    * If the member has an active interview, route to the interview flow.
    * Otherwise, normal agent session.
@@ -1301,9 +1587,8 @@ ${conversationText}
     // 确保与Web路径（chat方法）行为一致
     session.updateSystemPrompt(this.buildSystemPrompt(member));
 
-    // 在用户输入前注入当前时间提醒，确保AI知道准确的时间
-    const { display, iso } = this.formatNow();
-    const timeAwareMessage = `[系统时间更新: ${display}, ISO: ${iso}]\n\n${msg.text}`;
+    // 构建包含多媒体上下文的消息
+    const enhancedMessage = await this.buildEnhancedMessage(msg, member);
 
     const events: Array<{ type: string; data: unknown }> = [];
     let lastTurnText = "";
@@ -1320,37 +1605,40 @@ ${conversationText}
     });
 
     try {
-      await session.prompt(timeAwareMessage);
+      await session.prompt(enhancedMessage);
     } catch (err) {
       // Stop typing on error
       await this.stopTyping(member.id);
       
-      // 记录错误但不让整个服务崩溃
-      console.error(`Agent session error for member ${member.id}:`, err);
+      const error = err instanceof Error ? err : new Error(String(err));
       
-      // 给用户一个友好的错误消息
-      const errorMessage = err instanceof Error ? err.message : String(err);
-      let userFriendlyMessage = "抱歉，处理您的消息时出现了问题。";
-      
-      // 针对特定错误类型提供更有用的信息
-      if (errorMessage.includes('LLM_ERROR')) {
-        userFriendlyMessage += "大模型服务暂时不可用，请稍后重试。";
-      } else if (errorMessage.includes('AbortError') || errorMessage.includes('timeout')) {
-        userFriendlyMessage += "请求超时，请稍后重试。";
-      } else if (errorMessage.includes('tool_calls')) {
-        userFriendlyMessage += "工具调用出现问题，但您可以继续其他对话。";
-      } else {
-        userFriendlyMessage += "请稍后重试或联系管理员。";
-      }
-      
+      // 使用错误处理器处理 LLM 错误
       try {
-        await this.gateway.sendToMember(member.id, userFriendlyMessage);
-      } catch (sendErr) {
-        console.error(`Failed to send error message to member ${member.id}:`, sendErr);
+        const errorResult = await this.errorHandler.handleLLMError(error, msg, {
+          memberId: member.id
+        });
+        
+        if (errorResult.shouldFallbackToText && errorResult.modifiedMessage) {
+          // 使用纯文本降级重试
+          const fallbackMessage = await this.buildEnhancedMessage(errorResult.modifiedMessage, member);
+          
+          try {
+            await session.prompt(fallbackMessage);
+            console.log(`[Butler] LLM 错误后纯文本降级成功: ${member.id}`);
+          } catch (fallbackErr) {
+            // 纯文本降级也失败，发送友好错误消息
+            await this.sendErrorMessage(member, fallbackErr instanceof Error ? fallbackErr : new Error(String(fallbackErr)));
+            return;
+          }
+        } else {
+          await this.sendErrorMessage(member, error);
+          return;
+        }
+      } catch (handlerErr) {
+        // 错误处理器本身出错，发送基础错误消息
+        await this.sendErrorMessage(member, error);
+        return;
       }
-      
-      // 不再重新抛出错误，让服务继续运行
-      return;
     } finally {
       unsubscribe();
     }

@@ -1,11 +1,14 @@
 import { WeChatClient, MessageType } from "wechat-ilink-client";
 import type { WeixinMessage } from "wechat-ilink-client";
-import type { ChannelStatus } from "@nichijou/shared";
+import type { ChannelStatus, MultimediaConfig } from "@nichijou/shared";
 import { generateId } from "@nichijou/shared";
 import type { Channel } from "@nichijou/core";
 import type { Gateway } from "@nichijou/core";
 import type { StorageManager } from "@nichijou/core";
+import type { Database } from "@nichijou/core";
 import type { MemberConnection, WeChatCredentials, WeChatAccount } from "./types.js";
+import { MultimediaMessageParser } from "./multimedia-parser.js";
+import type { DownloadProgress, DownloadTask } from "@nichijou/core";
 
 /**
  * WeChat Channel using iLink Bot API via wechat-ilink-client.
@@ -37,6 +40,8 @@ export class WeChatChannel implements Channel {
 
   private gateway: Gateway | null = null;
   private storage: StorageManager;
+  private database: Database;
+  private multimediaConfig: MultimediaConfig;
   private pendingLogin: {
     client: WeChatClient;
     abort: AbortController;
@@ -45,9 +50,13 @@ export class WeChatChannel implements Channel {
   } | null = null;
   /** Periodic cleanup interval */
   private cleanupInterval: NodeJS.Timeout | null = null;
+  /** Multimedia message parsers for each connection */
+  private messageParsers = new Map<string, MultimediaMessageParser>();
 
-  constructor(storage: StorageManager) {
+  constructor(storage: StorageManager, database: Database, multimediaConfig: MultimediaConfig) {
     this.storage = storage;
+    this.database = database;
+    this.multimediaConfig = multimediaConfig;
   }
 
   async start(gateway: Gateway): Promise<void> {
@@ -86,10 +95,17 @@ export class WeChatChannel implements Channel {
     for (const client of this.clients.values()) {
       client.stop();
     }
+    
+    // 清理所有多媒体解析器
+    for (const parser of this.messageParsers.values()) {
+      parser.destroy();
+    }
+    
     this.clients.clear();
     this.connections.clear();
     this.userIdIndex.clear();
     this.memberIdIndex.clear();
+    this.messageParsers.clear();
     // Clean up all typing states
     this.cleanupTypingState();
   }
@@ -224,7 +240,15 @@ export class WeChatChannel implements Channel {
       // Clean up typing state for this member
       this.cleanupTypingState(conn.memberId);
     }
+    
+    // 清理多媒体解析器和下载任务
+    const parser = this.messageParsers.get(connectionId);
+    if (parser) {
+      parser.destroy();
+    }
+    
     this.connections.delete(connectionId);
+    this.messageParsers.delete(connectionId);
 
     this.storage.deleteFile(`wechat/connections/${connectionId}`);
     console.log(`[WeChat] 已删除连接 ${connectionId}`);
@@ -250,9 +274,7 @@ export class WeChatChannel implements Channel {
 
     client.on("message", async (msg: WeixinMessage) => {
       if (msg.message_type !== MessageType.USER) return;
-
-      const text = WeChatClient.extractText(msg);
-      if (!text || !this.gateway) return;
+      if (!this.gateway) return;
 
       const fromUserId = msg.from_user_id ?? "";
 
@@ -269,7 +291,10 @@ export class WeChatChannel implements Channel {
       const conn = connId ? this.connections.get(connId) : undefined;
 
       if (!conn?.memberId) {
-        // Unbound connection: route to binding flow
+        // Unbound connection: fallback to simple text extraction for binding flow
+        const text = WeChatClient.extractText(msg);
+        if (!text) return;
+        
         await this.gateway.handleUnboundInbound(
           "wechat",
           connId!,
@@ -281,13 +306,61 @@ export class WeChatChannel implements Channel {
         return;
       }
 
-      await this.gateway.handleInbound({
-        channel: "wechat",
-        memberId: conn.memberId,
-        text,
-        contextToken: msg.context_token,
-        timestamp: msg.create_time_ms,
-      });
+      try {
+        // Get or create multimedia parser for this connection
+        let parser = this.messageParsers.get(connectionId);
+        if (!parser) {
+          parser = new MultimediaMessageParser(
+            {
+              storage: this.storage,
+              database: this.database,
+              connectionId,
+              memberId: conn.memberId,
+              maxFileSize: this.multimediaConfig.storage.max_file_size_mb,
+              onDownloadProgress: (progress: DownloadProgress) => {
+                this.handleDownloadProgress(connectionId, progress);
+              },
+              onDownloadComplete: (task: DownloadTask, result: any) => {
+                this.handleDownloadComplete(connectionId, task, result);
+              },
+              onDownloadError: (task: DownloadTask, error: Error) => {
+                this.handleDownloadError(connectionId, task, error);
+              },
+            },
+            client
+          );
+          this.messageParsers.set(connectionId, parser);
+        }
+
+        // Parse multimedia message
+        const parsedMessage = await parser.parseMessage(msg);
+        
+        if (!parsedMessage.hasContent) {
+          console.log(`[WeChat] 忽略空消息: ${connectionId}`);
+          return;
+        }
+
+        // Build inbound message
+        const inboundMessage = parser.buildInboundMessage(parsedMessage, msg);
+        
+        // Handle the message through gateway
+        await this.gateway.handleInbound(inboundMessage);
+
+      } catch (error) {
+        console.error(`[WeChat] 处理多媒体消息失败 (${connectionId}):`, error);
+        
+        // Fallback to simple text processing
+        const text = WeChatClient.extractText(msg);
+        if (text) {
+          await this.gateway.handleInbound({
+            channel: "wechat",
+            memberId: conn.memberId,
+            text,
+            contextToken: msg.context_token,
+            timestamp: msg.create_time_ms,
+          });
+        }
+      }
     });
 
     client.on("error", (err: Error) => {
@@ -634,5 +707,130 @@ export class WeChatChannel implements Channel {
     const dir = `wechat/connections/${connectionId}`;
     this.storage.writeText(`${dir}/credentials.json`, JSON.stringify(credentials, null, 2));
     this.storage.writeText(`${dir}/meta.json`, JSON.stringify({ memberId }, null, 2));
+  }
+
+  /**
+   * 处理下载进度事件
+   */
+  private async handleDownloadProgress(connectionId: string, progress: DownloadProgress): Promise<void> {
+    const conn = this.connections.get(connectionId);
+    if (!conn?.memberId) return;
+
+    try {
+      // 可以向用户发送下载进度通知（可选）
+      if (progress.progress === 0) {
+        console.log(`[WeChat] 开始下载: ${progress.taskId} (${conn.memberId})`);
+      } else if (progress.progress % 25 === 0) { // 每25%报告一次
+        console.log(
+          `[WeChat] 下载进度 ${progress.progress}%: ${progress.taskId} ` +
+          `(速度: ${this.formatSpeed(progress.speed)}, 剩余: ${this.formatTime(progress.estimatedTimeRemaining)})`
+        );
+      }
+    } catch (error) {
+      console.error(`[WeChat] 处理下载进度失败:`, error);
+    }
+  }
+
+  /**
+   * 处理下载完成事件
+   */
+  private async handleDownloadComplete(connectionId: string, task: DownloadTask, result: any): Promise<void> {
+    const conn = this.connections.get(connectionId);
+    if (!conn?.memberId) return;
+
+    try {
+      const duration = task.endTime ? (task.endTime - task.startTime) / 1000 : 0;
+      console.log(
+        `[WeChat] 下载完成: ${task.fileName} ` +
+        `(大小: ${this.formatFileSize(task.downloadedSize)}, 耗时: ${duration.toFixed(1)}s)`
+      );
+
+      // 可以向用户发送下载完成通知（可选）
+      // await this.send(conn.memberId, `文件下载完成: ${task.fileName}`);
+    } catch (error) {
+      console.error(`[WeChat] 处理下载完成事件失败:`, error);
+    }
+  }
+
+  /**
+   * 处理下载错误事件
+   */
+  private async handleDownloadError(connectionId: string, task: DownloadTask, error: Error): Promise<void> {
+    const conn = this.connections.get(connectionId);
+    if (!conn?.memberId) return;
+
+    try {
+      console.error(`[WeChat] 下载失败: ${task.fileName} - ${error.message}`);
+
+      // 可以向用户发送错误通知（可选）
+      // await this.send(conn.memberId, `文件下载失败: ${task.fileName}`);
+    } catch (sendError) {
+      console.error(`[WeChat] 发送下载错误通知失败:`, sendError);
+    }
+  }
+
+  /**
+   * 获取连接的下载任务
+   */
+  getConnectionDownloadTasks(connectionId: string): DownloadTask[] {
+    const parser = this.messageParsers.get(connectionId);
+    return parser ? parser.getMemberDownloadTasks() : [];
+  }
+
+  /**
+   * 取消连接的下载任务
+   */
+  cancelConnectionDownloadTask(connectionId: string, taskId: string): boolean {
+    const parser = this.messageParsers.get(connectionId);
+    return parser ? parser.cancelDownloadTask(taskId) : false;
+  }
+
+  /**
+   * 取消连接的所有下载任务
+   */
+  cancelAllConnectionDownloadTasks(connectionId: string): number {
+    const parser = this.messageParsers.get(connectionId);
+    return parser ? parser.cancelAllDownloadTasks() : 0;
+  }
+
+  /**
+   * 获取所有下载任务统计
+   */
+  getAllDownloadStats(): Record<string, any> {
+    const stats: Record<string, any> = {};
+    
+    for (const [connectionId, parser] of this.messageParsers.entries()) {
+      stats[connectionId] = parser.getDownloadStats();
+    }
+    
+    return stats;
+  }
+
+  /**
+   * 格式化文件大小
+   */
+  private formatFileSize(bytes: number): string {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  }
+
+  /**
+   * 格式化速度
+   */
+  private formatSpeed(bytesPerSecond: number): string {
+    return this.formatFileSize(bytesPerSecond) + '/s';
+  }
+
+  /**
+   * 格式化时间
+   */
+  private formatTime(seconds: number): string {
+    if (seconds < 0) return '未知';
+    if (seconds < 60) return `${seconds}秒`;
+    if (seconds < 3600) return `${Math.floor(seconds / 60)}分${seconds % 60}秒`;
+    return `${Math.floor(seconds / 3600)}小时${Math.floor((seconds % 3600) / 60)}分`;
   }
 }
