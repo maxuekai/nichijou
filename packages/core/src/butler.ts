@@ -143,6 +143,7 @@ export class ButlerService {
       console.log(
         "[Plugin] 未配置插件。在 ~/.nichijou/config.yaml 设置 plugins: [\"@nichijou/plugin-weather\"] 或执行 nichijou plugin install <包名>",
       );
+      this.refreshAllSessionTools();
       return;
     }
     for (const spec of specs) {
@@ -154,6 +155,7 @@ export class ButlerService {
         console.warn(`[Plugin] 加载失败 ${spec}:`, err instanceof Error ? err.message : err);
       }
     }
+    this.refreshAllSessionTools();
   }
 
   /** 配置变更后重新加载插件（如管理后台保存 config） */
@@ -272,6 +274,16 @@ export class ButlerService {
       ...this.createDebugTools(), // 添加调试工具
       ...this.pluginHost.getAllTools(),
     ];
+  }
+
+  private refreshSessionTools(session: AgentSession): void {
+    session.updateTools(this.buildTools());
+  }
+
+  private refreshAllSessionTools(): void {
+    for (const session of this.sessions.values()) {
+      this.refreshSessionTools(session);
+    }
   }
 
   /**
@@ -1180,11 +1192,15 @@ ${conversationText}
   getOrCreateSession(memberId: string, isOnboarding = false): AgentSession {
     if (!isOnboarding) {
       const existing = this.sessions.get(memberId);
-      if (existing) return existing;
+      if (existing) {
+        this.refreshSessionTools(existing);
+        return existing;
+      }
 
       // 尝试从数据库恢复会话
       const restored = this.restoreSessionFromDatabase(memberId);
       if (restored) {
+        this.refreshSessionTools(restored);
         this.sessions.set(memberId, restored);
         return restored;
       }
@@ -1216,6 +1232,7 @@ ${conversationText}
     
     // 强制更新系统提示以确保时间信息是最新的
     session.updateSystemPrompt(this.buildSystemPrompt(member ?? undefined));
+    this.refreshSessionTools(session);
     
     // 在用户输入前注入当前时间提醒，确保AI知道准确的时间
     const { display, iso } = this.formatNow();

@@ -7,6 +7,10 @@ export class ToolRunner {
     this.tools = new Map(tools.map((t) => [t.name, t]));
   }
 
+  setTools(tools: ToolDefinition[]): void {
+    this.tools = new Map(tools.map((t) => [t.name, t]));
+  }
+
   getTool(name: string): ToolDefinition | undefined {
     return this.tools.get(name);
   }

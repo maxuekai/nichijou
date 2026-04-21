@@ -28,6 +28,11 @@ export class AgentLoop {
     this.maxTokens = opts.maxTokens;
   }
 
+  updateTools(tools: ToolDefinition[]): void {
+    this.tools = tools;
+    this.toolRunner.setTools(tools);
+  }
+
   async *run(messages: Message[]): AsyncIterable<AgentEvent> {
     let turns = 0;
 

@@ -69,6 +69,12 @@ export class AgentSession {
     }
   }
 
+  updateTools(tools: AgentSessionOptions["tools"] = []): void {
+    const nextTools = tools ?? [];
+    this._state.tools = nextTools;
+    this.loop.updateTools(nextTools);
+  }
+
   getMessages(): Message[] {
     return [...this._state.messages];
   }
