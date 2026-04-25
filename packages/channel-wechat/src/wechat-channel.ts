@@ -199,6 +199,14 @@ export class WeChatChannel implements Channel {
     const conn = this.connections.get(connectionId);
     if (!conn) throw new Error(`连接不存在: ${connectionId}`);
 
+    for (const other of this.connections.values()) {
+      if (other.connectionId === connectionId || other.memberId !== memberId) continue;
+      other.memberId = null;
+      this.writeConnectionMemberId(other.connectionId, null);
+    }
+
+    this.memberIdIndex.delete(memberId);
+
     // Remove old member index if rebound
     if (conn.memberId) {
       this.memberIdIndex.delete(conn.memberId);
@@ -208,6 +216,12 @@ export class WeChatChannel implements Channel {
     this.memberIdIndex.set(memberId, connectionId);
 
     // Update persisted credentials
+    this.writeConnectionMemberId(connectionId, memberId);
+
+    console.log(`[WeChat] 连接 ${connectionId} 已绑定成员 ${memberId}`);
+  }
+
+  private writeConnectionMemberId(connectionId: string, memberId: string | null): void {
     const dir = `wechat/connections/${connectionId}`;
     const metaContent = this.storage.readText(`${dir}/meta.json`);
     if (metaContent) {
@@ -216,9 +230,9 @@ export class WeChatChannel implements Channel {
         meta.memberId = memberId;
         this.storage.writeText(`${dir}/meta.json`, JSON.stringify(meta, null, 2));
       } catch { /* ignore */ }
+    } else {
+      this.storage.writeText(`${dir}/meta.json`, JSON.stringify({ memberId }, null, 2));
     }
-
-    console.log(`[WeChat] 连接 ${connectionId} 已绑定成员 ${memberId}`);
   }
 
   /**

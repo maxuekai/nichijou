@@ -33,7 +33,7 @@ interface FamilyMember {
 const STATUS_LABELS: Record<string, { text: string; dot: string; bg: string }> = {
   connected: { text: "在线", dot: "bg-green-500", bg: "bg-green-50 text-green-700" },
   disconnected: { text: "离线", dot: "bg-stone-400", bg: "bg-stone-100 text-stone-500" },
-  expired: { text: "需重新扫码", dot: "bg-red-500", bg: "bg-red-50 text-red-600" },
+  expired: { text: "需要重新扫码", dot: "bg-red-500", bg: "bg-red-50 text-red-600" },
 };
 
 export function WeChatPage() {
@@ -41,6 +41,8 @@ export function WeChatPage() {
   const [pairing, setPairing] = useState(false);
   const [qrUrl, setQrUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [rebindTargetMemberId, setRebindTargetMemberId] = useState<string | null>(null);
+  const [pairingConnectionId, setPairingConnectionId] = useState<string | null>(null);
 
   // Binding state
   const [bindingConn, setBindingConn] = useState<WeChatConnection | null>(null);
@@ -65,18 +67,20 @@ export function WeChatPage() {
       });
 
       // Auto-detect completed pairing: connection appeared that is unbound
-      if (pairing && data.connections?.some((c) => !c.memberId)) {
-        const unboundConn = data.connections.find((c) => !c.memberId);
+      if (pairing && pairingConnectionId) {
+        const unboundConn = data.connections?.find((c) => !c.memberId && c.connectionId === pairingConnectionId);
         if (unboundConn) {
           setPairing(false);
           setQrUrl(null);
-          openBindDialog(unboundConn);
+          setPairingConnectionId(null);
+          openBindDialog(unboundConn, rebindTargetMemberId ?? undefined);
+          setRebindTargetMemberId(null);
         }
       }
     } catch {
       // ignore
     }
-  }, [pairing]);
+  }, [pairing, pairingConnectionId, rebindTargetMemberId]);
 
   useEffect(() => {
     loadStatus();
@@ -93,33 +97,41 @@ export function WeChatPage() {
     } catch { /* ignore */ }
   }
 
-  function openBindDialog(conn: WeChatConnection) {
+  function openBindDialog(conn: WeChatConnection, defaultMemberId?: string) {
     setBindingConn(conn);
-    setSelectedMemberId("");
+    setSelectedMemberId(defaultMemberId ?? "");
     setNewMemberName("");
     setBindMode("select");
     loadMembers();
   }
 
-  async function startPairing() {
+  async function startPairing(replaceConn?: WeChatConnection) {
     setError(null);
     setPairing(true);
+    setQrUrl(null);
+    setPairingConnectionId(null);
+    setRebindTargetMemberId(replaceConn?.memberId ?? null);
     try {
       const res = await fetch("/api/wechat/pair", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({}),
       });
-      const data = await res.json() as { ok: boolean; qrUrl?: string; error?: string };
+      const data = await res.json() as { ok: boolean; qrUrl?: string; connectionId?: string; error?: string };
       if (data.ok && data.qrUrl) {
         setQrUrl(data.qrUrl);
+        setPairingConnectionId(data.connectionId ?? null);
       } else {
         setError(data.error ?? "无法生成二维码");
         setPairing(false);
+        setPairingConnectionId(null);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "请求失败");
       setPairing(false);
+      setQrUrl(null);
+      setPairingConnectionId(null);
+      setRebindTargetMemberId(null);
     }
   }
 
@@ -127,6 +139,8 @@ export function WeChatPage() {
     await fetch("/api/wechat/pair/cancel", { method: "POST" });
     setPairing(false);
     setQrUrl(null);
+    setPairingConnectionId(null);
+    setRebindTargetMemberId(null);
     loadStatus();
   }
 
@@ -183,7 +197,7 @@ export function WeChatPage() {
         </div>
         {!pairing && (
           <button
-            onClick={startPairing}
+            onClick={() => startPairing()}
             disabled={!status.available}
             className="px-5 py-2.5 rounded-lg bg-green-600 text-white text-sm font-medium hover:bg-green-700 disabled:opacity-50 transition-colors"
           >
@@ -366,6 +380,15 @@ export function WeChatPage() {
                         className="px-3 py-1.5 rounded-lg bg-amber-500 text-white text-xs font-medium hover:bg-amber-600 transition-colors"
                       >
                         绑定成员
+                      </button>
+                    )}
+                    {conn.status === "expired" && (
+                      <button
+                        onClick={() => startPairing(conn)}
+                        disabled={pairing}
+                        className="px-3 py-1.5 rounded-lg bg-red-500 text-white text-xs font-medium hover:bg-red-600 disabled:opacity-50 transition-colors"
+                      >
+                        重新扫码
                       </button>
                     )}
                     <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium ${s.bg}`}>

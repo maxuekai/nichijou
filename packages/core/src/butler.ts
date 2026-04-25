@@ -18,7 +18,8 @@ import type {
   Plan,
   MediaContent,
   ProcessedMediaInfo,
-  ReferenceContent
+  ReferenceContent,
+  MultimediaConfig
 } from "@nichijou/shared";
 import { hostname, platform, arch, cpus, totalmem, freemem, uptime as osUptime, loadavg } from "node:os";
 import type { Channel } from "./gateway/channel.js";
@@ -160,9 +161,9 @@ export class ButlerService {
     try {
       const modName = "@nichijou/channel-wechat";
       const mod = await import(/* webpackIgnore: true */ modName) as {
-        WeChatChannel: new (storage: StorageManager) => WeChatChannelLike;
+        WeChatChannel: new (storage: StorageManager, database: Database, multimediaConfig: MultimediaConfig) => WeChatChannelLike;
       };
-      const channel = new mod.WeChatChannel(this.storage) as WeChatChannelLike;
+      const channel = new mod.WeChatChannel(this.storage, this.db, this.config.getMultimediaConfig()) as WeChatChannelLike;
       this.gateway.registerChannel(channel);
       await channel.start(this.gateway);
       this._wechatChannel = channel;
@@ -1913,7 +1914,7 @@ ${conversationText}
 
   /**
    * Handle a message from an unbound WeChat connection.
-   * Guides the user through creating or selecting a member to bind.
+   * Guides the user to the admin binding flow, or binds by exact existing member name.
    */
   private async handleUnboundMessage(
     _channelId: string,
@@ -1939,7 +1940,8 @@ ${conversationText}
       if (ch?.isMemberBound(existingMember.id)) {
         await send(
           `「${existingMember.name}」已经绑定了微信，不能重复绑定。\n\n` +
-          `请输入一个新的名字来创建账号，或选择其他未绑定的成员。\n\n当前家庭成员：\n${membersList}`,
+          `请在管理后台解除旧绑定或点击过期连接的「重新扫码」。如需绑定其他未绑定成员，请输入完整成员名。\n\n` +
+          `当前家庭成员：\n${membersList}`,
         );
         return;
       }
@@ -1978,47 +1980,11 @@ ${conversationText}
       return;
     }
 
-    // No match: create new member
-    if (trimmed.length < 1 || trimmed.length > 20) {
-      await send(
-        `你好！欢迎使用家庭管家 ✨\n\n` +
-        `请输入你的名字来创建账号（1-20个字符），或输入已有成员的名字进行绑定。\n\n` +
-        `当前家庭成员：\n${membersList}`,
-      );
-      return;
-    }
-
-    // Create new member
-    const newMember = this.familyManager.addMember(trimmed);
-    const ch = this._wechatChannel;
-    if (ch) {
-      ch.bindMember(connectionId, newMember.id);
-      this.familyManager.bindChannel(newMember.id, "wechat", connectionId);
-    }
-
-    await send(`已为你创建账号「${trimmed}」并绑定成功！`);
-
-    // Auto-start interview to collect lifestyle habits
-    setTimeout(async () => {
-      try {
-        const firstReply = await this.startInterview(newMember.id);
-        const intro = [
-          `欢迎加入！我是你的家庭管家，接下来让我了解一下你的日常生活习惯，以便为你制定合适的计划 🏠\n`,
-          firstReply,
-          `\n（回答完所有问题后，输入「完成」即可自动生成你的个人档案和 7 days 习惯）`,
-        ].join("\n");
-        await this.gateway.sendToMember(newMember.id, intro);
-        this.db.saveConversationLog(newMember.id, "[新成员引导]", intro, "[]");
-      } catch (err) {
-        console.error("[Onboarding] 引导对话启动失败:", err);
-        try {
-          await this.gateway.sendToMember(
-            newMember.id,
-            "欢迎加入！你可以直接和我聊天，告诉我你的日常生活习惯，我来帮你安排计划。",
-          );
-        } catch { /* ignore */ }
-      }
-    }, 1500);
+    await send(
+      `这个微信连接还没有绑定家庭成员。\n\n` +
+      `请在管理后台的「微信连接」页面完成绑定；如果要直接从微信绑定已有成员，请输入完整成员名。\n\n` +
+      `当前家庭成员：\n${membersList}`,
+    );
   }
 
   /**

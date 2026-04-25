@@ -113,6 +113,19 @@ export class FamilyManager {
     this.saveMembers(members);
   }
 
+  unbindChannel(memberId: string, channel: string, channelUserId?: string): void {
+    const members = this.getMembers();
+    const member = members.find((m) => m.id === memberId);
+    if (!member) throw new Error(`Member not found: ${memberId}`);
+    if (channelUserId && member.channelBindings[channel] !== channelUserId) return;
+
+    delete member.channelBindings[channel];
+    if (member.primaryChannel === channel) {
+      member.primaryChannel = Object.keys(member.channelBindings)[0] ?? "";
+    }
+    this.saveMembers(members);
+  }
+
   deleteMember(memberId: string): void {
     const members = this.getMembers();
     const idx = members.findIndex((m) => m.id === memberId);

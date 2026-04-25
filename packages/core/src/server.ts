@@ -739,7 +739,13 @@ export class NichijouServer {
           return;
         }
         try {
+          const conn = ch.getConnections().find((c) => c.connectionId === connectionId);
           ch.removeConnection(connectionId);
+          if (conn?.memberId) {
+            try {
+              this.butler.familyManager.unbindChannel(conn.memberId, "wechat", connectionId);
+            } catch { /* ignore stale member metadata */ }
+          }
           this.json(res, { ok: true });
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
@@ -771,6 +777,31 @@ export class NichijouServer {
           if (!memberId) {
             this.json(res, { ok: false, error: "请选择成员或输入新成员名字" });
             return;
+          }
+
+          const member = this.butler.familyManager.getMember(memberId);
+          if (!member) {
+            this.json(res, { ok: false, error: "成员不存在" });
+            return;
+          }
+
+          const conn = ch.getConnections().find((c) => c.connectionId === body.connectionId);
+          if (!conn) {
+            this.json(res, { ok: false, error: "连接不存在" });
+            return;
+          }
+
+          if (conn.memberId && conn.memberId !== memberId) {
+            try {
+              this.butler.familyManager.unbindChannel(conn.memberId, "wechat", body.connectionId);
+            } catch { /* ignore stale member metadata */ }
+          }
+
+          const oldConnectionId = member.channelBindings.wechat;
+          if (oldConnectionId && oldConnectionId !== body.connectionId) {
+            try {
+              ch.removeConnection(oldConnectionId);
+            } catch { /* ignore missing stale connection */ }
           }
 
           ch.bindMember(body.connectionId, memberId);
