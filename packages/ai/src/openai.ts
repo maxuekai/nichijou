@@ -24,7 +24,6 @@ interface OpenAIMessage {
   name?: string;
   tool_call_id?: string;
   tool_calls?: OpenAIToolCall[];
-  reasoning_content?: string;
 }
 
 interface OpenAIToolCall {
@@ -109,7 +108,7 @@ async function mediaContentToParts(mediaList: MediaContent[]): Promise<OpenAICon
   return parts;
 }
 
-async function toOpenAIMessages(messages: (Message | MultimodalMessage)[], includeReasoningContent = false): Promise<OpenAIMessage[]> {
+async function toOpenAIMessages(messages: (Message | MultimodalMessage)[]): Promise<OpenAIMessage[]> {
   const result: OpenAIMessage[] = [];
   
   for (const m of messages) {
@@ -120,9 +119,6 @@ async function toOpenAIMessages(messages: (Message | MultimodalMessage)[], inclu
     if (m.toolCallId) msg.tool_call_id = m.toolCallId;
     if (m.toolCalls && m.toolCalls.length > 0) {
       msg.tool_calls = m.toolCalls;
-    }
-    if (includeReasoningContent && m.role === "assistant" && m.reasoningContent) {
-      msg.reasoning_content = m.reasoningContent;
     }
     
     // 处理内容
@@ -393,7 +389,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
   ): Promise<Record<string, unknown>> {
     const deepSeek = isDeepSeekProvider(this.config);
     const thinkingEnabled = this.config.thinkingMode === true;
-    const messages = await toOpenAIMessages(request.messages, thinkingEnabled);
+    const messages = await toOpenAIMessages(request.messages);
     const body: Record<string, unknown> = {
       model: request.model ?? this.config.model,
       messages: [buildCurrentTimeMessage(this.config.timeZone ?? DEFAULT_TIME_ZONE), ...messages],

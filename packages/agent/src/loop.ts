@@ -5,6 +5,12 @@ import { ToolRunner } from "./tool-runner.js";
 
 const DEFAULT_MAX_TURNS = 10;
 
+function toConversationHistoryMessage(message: Message): Message {
+  const historyMessage: Message = { ...message };
+  delete historyMessage.reasoningContent;
+  return historyMessage;
+}
+
 export class AgentLoop {
   private provider: LLMProvider;
   private toolRunner: ToolRunner;
@@ -42,7 +48,7 @@ export class AgentLoop {
       let turnUsage: Usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
       const stream = this.provider.chatStream({
-        messages,
+        messages: messages.map(toConversationHistoryMessage),
         tools: this.tools.length > 0 ? this.tools : undefined,
         temperature: this.temperature,
         maxTokens: this.maxTokens,
@@ -65,7 +71,7 @@ export class AgentLoop {
         return;
       }
 
-      messages.push(assistantMessage);
+      messages.push(toConversationHistoryMessage(assistantMessage));
       yield { type: "turn_end", message: assistantMessage, usage: turnUsage };
 
       if (!assistantMessage.toolCalls || assistantMessage.toolCalls.length === 0) {

@@ -1923,10 +1923,36 @@ ${conversationText}
     return this.currentMemberId || "";
   }
 
+  private formatAdminErrorMessage(error: Error): string {
+    const rawError = error.stack || `${error.name}: ${error.message}`;
+    const redacted = this.redactSensitiveErrorText(rawError);
+    const maxLength = 3500;
+    return redacted.length > maxLength
+      ? `${redacted.slice(0, maxLength)}\n...`
+      : redacted;
+  }
+
+  private redactSensitiveErrorText(text: string): string {
+    return text
+      .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [REDACTED]")
+      .replace(/sk-[A-Za-z0-9_-]{12,}/g, "sk-[REDACTED]")
+      .replace(/(api[_-]?key["'\s:=]+)[^"'\s,}]+/gi, "$1[REDACTED]")
+      .replace(/(authorization["'\s:=]+)[^"'\s,}]+/gi, "$1[REDACTED]");
+  }
+
   /**
-   * 发送用户友好的错误消息
+   * 发送错误消息。管理员收到内部错误详情，普通成员收到友好提示。
    */
   private async sendErrorMessage(member: FamilyMember, error: Error): Promise<void> {
+    if (member.role === "admin") {
+      try {
+        await this.gateway.sendToMember(member.id, this.formatAdminErrorMessage(error));
+      } catch (sendErr) {
+        console.error(`Failed to send admin error message to member ${member.id}:`, sendErr);
+      }
+      return;
+    }
+
     const errorMessage = error.message;
     let userFriendlyMessage = "抱歉，处理您的消息时出现了问题。";
     
@@ -2007,14 +2033,22 @@ ${conversationText}
     
     // Slash commands (admin only)
     if (msg.text.startsWith("/")) {
-      const reply = await this.handleSlashCommand(member, msg.text);
-      await this.gateway.sendToMember(member.id, reply);
+      try {
+        const reply = await this.handleSlashCommand(member, msg.text);
+        await this.gateway.sendToMember(member.id, reply);
+      } catch (error) {
+        await this.sendErrorMessage(member, error instanceof Error ? error : new Error(String(error)));
+      }
       return;
     }
 
     // Route to interview if active
     if (this.hasActiveInterview(member.id)) {
-      await this.handleInterviewMessage(member, msg.text);
+      try {
+        await this.handleInterviewMessage(member, msg.text);
+      } catch (error) {
+        await this.sendErrorMessage(member, error instanceof Error ? error : new Error(String(error)));
+      }
       return;
     }
 
@@ -2112,6 +2146,11 @@ ${conversationText}
       
       // 使用错误处理器处理 LLM 错误
       try {
+        if (member.role === "admin") {
+          await this.sendErrorMessage(member, error);
+          return;
+        }
+
         const errorResult = await this.errorHandler.handleLLMError(error, msg, {
           memberId: member.id
         });
@@ -2245,8 +2284,7 @@ ${conversationText}
 
         await this.gateway.sendToMember(member.id, summary);
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        await this.gateway.sendToMember(member.id, `整理档案时出了点问题：${msg}\n你可以继续对话，或者输入「完成」重试。`);
+        await this.sendErrorMessage(member, err instanceof Error ? err : new Error(String(err)));
       }
       return;
     }
@@ -2260,8 +2298,7 @@ ${conversationText}
       await this.gateway.sendToMember(member.id, reply);
     } catch (err) {
       await this.stopTyping(member.id);
-      const errMsg = err instanceof Error ? err.message : String(err);
-      await this.gateway.sendToMember(member.id, `出了点问题：${errMsg}`);
+      await this.sendErrorMessage(member, err instanceof Error ? err : new Error(String(err)));
     }
   }
 

@@ -2,16 +2,24 @@ import type { Message } from "@nichijou/shared";
 import { AgentLoop } from "./loop.js";
 import type { AgentEvent, AgentSessionOptions, SessionState } from "./events.js";
 
+function toConversationHistoryMessage(message: Message): Message {
+  const historyMessage: Message = { ...message };
+  delete historyMessage.reasoningContent;
+  return historyMessage;
+}
+
 export class AgentSession {
   private loop: AgentLoop;
   private _state: SessionState;
   private subscribers: Array<(event: AgentEvent) => void> = [];
 
   constructor(opts: AgentSessionOptions) {
+    const initialMessages = opts.messages ?? [
+      { role: "system" as const, content: opts.systemPrompt },
+    ];
+
     this._state = {
-      messages: opts.messages ?? [
-        { role: "system", content: opts.systemPrompt },
-      ],
+      messages: initialMessages.map(toConversationHistoryMessage),
       systemPrompt: opts.systemPrompt,
       tools: opts.tools ?? [],
     };
@@ -70,7 +78,7 @@ export class AgentSession {
   }
 
   replaceMessages(messages: Message[], systemPrompt?: string): void {
-    const nextMessages = [...messages];
+    const nextMessages = messages.map(toConversationHistoryMessage);
     const prompt = systemPrompt ?? this._state.systemPrompt;
 
     if (nextMessages.length === 0 || nextMessages[0]!.role !== "system") {
@@ -88,7 +96,7 @@ export class AgentSession {
   }
 
   getMessages(): Message[] {
-    return [...this._state.messages];
+    return this._state.messages.map(toConversationHistoryMessage);
   }
 
   clearHistory(): void {

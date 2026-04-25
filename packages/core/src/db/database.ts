@@ -774,7 +774,7 @@ export class Database {
    * 保存会话状态到数据库
    */
   saveSessionState(memberId: string, messages: any[], systemPrompt: string): void {
-    const messagesJson = JSON.stringify(messages);
+    const messagesJson = JSON.stringify(this.sanitizeSessionMessages(messages));
     const now = new Date().toISOString();
     
     this.db.prepare(`
@@ -800,7 +800,7 @@ export class Database {
     try {
       const messages = JSON.parse(result.messages_json);
       return {
-        messages,
+        messages: this.sanitizeSessionMessages(messages),
         systemPrompt: result.system_prompt,
         updatedAt: result.updated_at,
       };
@@ -834,7 +834,7 @@ export class Database {
         const messages = JSON.parse(result.messages_json);
         sessions.push({
           memberId: result.member_id,
-          messages,
+          messages: this.sanitizeSessionMessages(messages),
           systemPrompt: result.system_prompt,
           updatedAt: result.updated_at,
         });
@@ -844,6 +844,18 @@ export class Database {
     }
 
     return sessions;
+  }
+
+  private sanitizeSessionMessages(messages: any[]): any[] {
+    return messages.map((message) => {
+      if (!message || typeof message !== "object" || Array.isArray(message)) {
+        return message;
+      }
+
+      const sanitized = { ...message };
+      delete sanitized.reasoningContent;
+      return sanitized;
+    });
   }
 
   /**

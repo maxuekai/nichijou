@@ -17,7 +17,7 @@ export interface LLMModelConfig {
   apiKey: string;          // API密钥
   model: string;           // 模型名称
   timeout?: number;        // 超时设置
-  thinkingMode?: boolean;  // 是否启用思考模式，需要回传 reasoning_content
+  thinkingMode?: boolean;  // 是否启用思考模式；reasoning_content 只读响应，不回传请求历史
   enabled: boolean;        // 是否启用
   isDefault: boolean;      // 是否为默认模型
   createdAt: string;       // 创建时间
