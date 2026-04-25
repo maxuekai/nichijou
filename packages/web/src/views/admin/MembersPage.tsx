@@ -11,6 +11,13 @@ import {
 } from "@heroicons/react/24/outline";
 import { createIconWrapper } from "../../components/ui/Icon";
 import { Select } from "../../components/ui/Select";
+import {
+  RoutineEditorDialog,
+  defaultTimeForSlot,
+  normalizeRoutineForScheduledActions,
+  type Routine,
+  type RoutineAction,
+} from "./RoutineEditorDialog";
 
 // 创建包装过的图标组件
 const DeleteIcon = createIconWrapper(TrashIcon);
@@ -21,30 +28,6 @@ const InfoIcon = createIconWrapper(InformationCircleIcon);
 const WarningIcon = createIconWrapper(ExclamationTriangleIcon);
 
 const WEEKDAY_NAMES = ["日", "一", "二", "三", "四", "五", "六"];
-
-interface RoutineAction {
-  id: string;
-  type: "notify" | "plugin" | "ai_task";
-  trigger: "before" | "at" | "after";
-  offsetMinutes: number;
-  channel?: string;
-  message?: string;
-  toolName?: string;
-  toolParams?: Record<string, unknown>;
-  prompt?: string;
-}
-
-interface Routine {
-  id: string;
-  title: string;
-  description?: string;
-  assigneeMemberIds?: string[];
-  weekdays: number[];
-  timeSlot?: string;
-  time?: string;
-  reminders: Array<{ offsetMinutes: number; message: string; channel: string }>;
-  actions?: RoutineAction[];
-}
 
 interface Override {
   id: string;
@@ -236,87 +219,6 @@ export function MembersPage() {
       setPageError(err instanceof Error ? err.message : "删除成员失败");
     }
     setDeleting(null);
-  }
-
-  function defaultTimeForSlot(slot?: string): string | undefined {
-    const defaults: Record<string, string> = { morning: "08:00", afternoon: "14:00", evening: "20:00" };
-    return slot ? defaults[slot] : undefined;
-  }
-
-  function getScheduledAiPrompt(routine: Routine): string {
-    const aiTask = routine.actions?.find((action) => action.type === "ai_task");
-    if (!aiTask) return "";
-    return asText(aiTask.prompt ?? routine.description ?? routine.title);
-  }
-
-  function getScheduledNotifyMessage(routine: Routine): string {
-    const notify = routine.actions?.find((action) => action.type === "notify");
-    return asText(notify?.message ?? routine.reminders?.[0]?.message ?? "{{result}}");
-  }
-
-  function upsertRoutineActionDraft(routine: Routine, action: Partial<RoutineAction> & Pick<RoutineAction, "type">): Routine {
-    const actions = [...(routine.actions ?? [])];
-    const existingIndex = actions.findIndex((item) => item.type === action.type);
-    const existing = existingIndex >= 0 ? actions[existingIndex] : undefined;
-    const nextAction: RoutineAction = {
-      id: existing?.id ?? `${routine.id}_${action.type}`,
-      trigger: action.type === "notify" ? "after" : "at",
-      offsetMinutes: 0,
-      channel: "wechat",
-      ...existing,
-      ...action,
-    };
-
-    if (existingIndex >= 0) {
-      actions[existingIndex] = nextAction;
-    } else {
-      actions.push(nextAction);
-    }
-
-    return { ...routine, actions };
-  }
-
-  function normalizeRoutineForScheduledActions(routine: Routine, options?: { seedAiTaskFromFallback?: boolean }): Routine {
-    const title = routine.title.trim() || "新习惯";
-    const prompt = getScheduledAiPrompt(routine).trim()
-      || (options?.seedAiTaskFromFallback ? asText(routine.description ?? routine.title).trim() : "");
-    const hasAiTask = prompt.length > 0;
-    const notifyMessage = getScheduledNotifyMessage(routine).trim() || (hasAiTask ? "{{result}}" : title);
-    const actionPrefix = routine.id || `rtn_${Date.now().toString(36)}`;
-    const notifyAction: RoutineAction = {
-      id: `${actionPrefix}_notify`,
-      type: "notify",
-      trigger: hasAiTask ? "after" : "at",
-      offsetMinutes: 0,
-      channel: "wechat",
-      message: notifyMessage,
-    };
-    return {
-      id: routine.id,
-      title,
-      description: prompt || title,
-      assigneeMemberIds: routine.assigneeMemberIds,
-      weekdays: routine.weekdays,
-      time: routine.time ?? defaultTimeForSlot(routine.timeSlot),
-      reminders: [{
-        offsetMinutes: 0,
-        message: notifyMessage,
-        channel: "wechat",
-      }],
-      actions: hasAiTask
-        ? [
-          {
-            id: `${actionPrefix}_ai_task`,
-            type: "ai_task",
-            trigger: "at",
-            offsetMinutes: 0,
-            channel: "wechat",
-            prompt,
-          },
-          notifyAction,
-        ]
-        : [notifyAction],
-    };
   }
 
   async function saveRoutine(routine: Routine) {
@@ -695,7 +597,7 @@ export function MembersPage() {
                             </div>
                           </div>
 
-                          {((routine.actions ?? []).length > 0 || routine.reminders.length > 0) && (
+                          {((routine.actions ?? []).length > 0 || (routine.reminders ?? []).length > 0) && (
                             <div className="mt-2 flex flex-wrap gap-1.5">
                               {(routine.actions ?? []).map((a) => {
                                 const icons: Record<string, string> = { notify: "🔔", plugin: "🔧", ai_task: "🤖" };
@@ -714,7 +616,7 @@ export function MembersPage() {
                                   </span>
                                 );
                               })}
-                              {!(routine.actions?.length) && routine.reminders.map((r, i) => (
+                              {!(routine.actions?.length) && (routine.reminders ?? []).map((r, i) => (
                                 <span key={i} className="inline-flex items-center gap-1 text-xs bg-blue-50 text-blue-600 px-2 py-0.5 rounded">
                                   🔔 {r.offsetMinutes > 0 ? `提前${r.offsetMinutes}分钟` : "到时"}
                                   {r.message ? `: ${r.message}` : ""}
@@ -1182,140 +1084,14 @@ export function MembersPage() {
         </div>
       )}
 
-      {/* Edit routine dialog */}
       {editingRoutine && (
-        <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50" onClick={() => setEditingRoutine(null)}>
-          <div className="bg-white rounded-2xl shadow-xl p-6 w-full max-w-lg mx-4 max-h-[90vh] overflow-auto" onClick={(e) => e.stopPropagation()}>
-            <h3 className="text-lg font-semibold text-stone-800 mb-4">
-              {detail?.routines.some((r) => r.id === editingRoutine.id) ? "编辑 7 days 习惯" : "新增 7 days 习惯"}
-            </h3>
-            <div className="space-y-4">
-              <div>
-                <label className="block text-xs font-medium text-stone-500 mb-1">名称</label>
-                <input
-                  type="text"
-                  value={editingRoutine.title}
-                  onChange={(e) => {
-                    const nextTitle = e.target.value;
-                    const currentPrompt = getScheduledAiPrompt(editingRoutine);
-                    const nextRoutine = { ...editingRoutine, title: nextTitle };
-                    setEditingRoutine(
-                      currentPrompt === editingRoutine.title
-                        ? upsertRoutineActionDraft(nextRoutine, {
-                            type: "ai_task",
-                            trigger: "at",
-                            offsetMinutes: 0,
-                            channel: "wechat",
-                            prompt: nextTitle,
-                          })
-                        : nextRoutine,
-                    );
-                  }}
-                  className="w-full px-3 py-2 rounded-lg border border-stone-300 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-stone-500 mb-1">AI 任务内容（可选）</label>
-                <textarea
-                  value={getScheduledAiPrompt(editingRoutine)}
-                  onChange={(e) => {
-                    setEditingRoutine(upsertRoutineActionDraft(editingRoutine, {
-                      type: "ai_task",
-                      trigger: "at",
-                      offsetMinutes: 0,
-                      channel: "wechat",
-                      prompt: e.target.value,
-                    }));
-                  }}
-                  rows={3}
-                  className="w-full px-3 py-2 rounded-lg border border-stone-300 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 resize-none"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-stone-500 mb-1">微信通知内容</label>
-                <textarea
-                  value={getScheduledNotifyMessage(editingRoutine)}
-                  onChange={(e) => {
-                    setEditingRoutine(upsertRoutineActionDraft(editingRoutine, {
-                      type: "notify",
-                      trigger: "after",
-                      offsetMinutes: 0,
-                      channel: "wechat",
-                      message: e.target.value,
-                    }));
-                  }}
-                  rows={2}
-                  placeholder="{{result}}"
-                  className="w-full px-3 py-2 rounded-lg border border-stone-300 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 resize-none"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-stone-500 mb-2">每周重复</label>
-                <div className="flex gap-2">
-                  {[0, 1, 2, 3, 4, 5, 6].map((d) => (
-                    <button
-                      key={d}
-                      onClick={() => {
-                        const wds = editingRoutine.weekdays.includes(d)
-                          ? editingRoutine.weekdays.filter((x) => x !== d)
-                          : [...editingRoutine.weekdays, d].sort();
-                        setEditingRoutine({ ...editingRoutine, weekdays: wds });
-                      }}
-                      className={`w-9 h-9 rounded-full text-sm font-medium transition-colors ${
-                        editingRoutine.weekdays.includes(d)
-                          ? "bg-amber-500 text-white"
-                          : "bg-stone-100 text-stone-400 hover:bg-stone-200"
-                      }`}
-                    >
-                      {WEEKDAY_NAMES[d]}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-stone-500 mb-1">具体时间</label>
-                <input
-                  type="time"
-                  value={editingRoutine.time ?? ""}
-                  onChange={(e) => setEditingRoutine({ ...editingRoutine, time: e.target.value || undefined })}
-                  className="w-full px-3 py-2.5 rounded-xl border border-stone-200 bg-stone-50 text-sm font-medium text-stone-700 focus:outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-400 focus:bg-white transition-all [&::-webkit-calendar-picker-indicator]:opacity-60 [&::-webkit-calendar-picker-indicator]:cursor-pointer"
-                  required
-                />
-              </div>
-
-              <div className="p-3 rounded-lg bg-stone-50 border border-stone-200">
-                <p className="text-xs text-stone-500">
-                  留空 AI 任务内容时只发送微信通知，不执行 AI。通知内容可使用 {"{{result}}"} 引用 AI 任务返回内容。
-                </p>
-              </div>
-            </div>
-
-            <div className="flex justify-end gap-3 mt-6">
-              <button
-                onClick={() => setEditingRoutine(null)}
-                className="px-4 py-2 rounded-lg text-sm text-stone-600 hover:bg-stone-100 transition-colors cursor-pointer"
-              >
-                取消
-              </button>
-              <button
-                onClick={() => saveRoutine(editingRoutine)}
-                disabled={
-                  !editingRoutine.title.trim()
-                  || !getScheduledNotifyMessage(editingRoutine).trim()
-                  || editingRoutine.weekdays.length === 0
-                  || !editingRoutine.time
-                }
-                className="px-4 py-2 rounded-lg bg-amber-500 text-white text-sm font-medium hover:bg-amber-600 disabled:opacity-50 transition-colors cursor-pointer"
-              >
-                保存
-              </button>
-            </div>
-          </div>
-        </div>
+        <RoutineEditorDialog
+          routine={editingRoutine}
+          title={detail?.routines.some((r) => r.id === editingRoutine.id) ? "编辑 7 days 习惯" : "新增 7 days 习惯"}
+          onChange={setEditingRoutine}
+          onCancel={() => setEditingRoutine(null)}
+          onSave={saveRoutine}
+        />
       )}
 
       {/* 家庭项编辑统一在“家庭”页面处理 */}

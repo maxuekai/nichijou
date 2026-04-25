@@ -660,27 +660,6 @@ export class NichijouServer {
         return;
       }
 
-      if (path === "/api/routines/parse" && method === "POST") {
-        try {
-          const body = await this.readBody(req) as { memberId: string; description: string };
-          if (!body.memberId || !body.description) {
-            this.json(res, { ok: false, error: "memberId 和 description 为必填" });
-            return;
-          }
-          const { routine, warnings } = await this.butler.parseRoutineDescription(body.memberId, body.description);
-          this.json(res, { ok: true, routine, warnings });
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          this.json(res, { ok: false, error: msg });
-        }
-        return;
-      }
-
-      if (path === "/api/routines/parse" && method !== "POST") {
-        this.json(res, { error: "Method Not Allowed" }, 405);
-        return;
-      }
-
       if (path === "/api/plans/parse" && method === "POST") {
         try {
           const body = await this.readBody(req) as { memberId: string; description: string };

@@ -1,27 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../../api";
+import {
+  RoutineEditorDialog,
+  defaultTimeForSlot,
+  normalizeRoutineForScheduledActions,
+  type Routine,
+} from "./RoutineEditorDialog";
 
 const WEEKDAY_NAMES = ["日", "一", "二", "三", "四", "五", "六"];
 
-interface RoutineAction {
-  id: string;
-  type: "notify" | "plugin" | "ai_task";
-  trigger: "before" | "at" | "after";
-  offsetMinutes: number;
-  message?: string;
-  toolName?: string;
-  prompt?: string;
-}
-
-interface FamilyRoutine {
-  id: string;
-  title: string;
-  description?: string;
-  assigneeMemberIds?: string[];
-  weekdays: number[];
-  time?: string;
-  actions?: RoutineAction[];
-}
+type FamilyRoutine = Routine;
 
 interface FamilyPlan {
   id: string;
@@ -58,7 +46,6 @@ export function FamilyPage() {
   const [editingRoutine, setEditingRoutine] = useState<FamilyRoutine | null>(null);
   const [editingPlan, setEditingPlan] = useState<FamilyPlan | null>(null);
 
-  const [routineParsing, setRoutineParsing] = useState(false);
   const [planParsing, setPlanParsing] = useState(false);
   const [aiWarnings, setAiWarnings] = useState<string[]>([]);
   const [parseError, setParseError] = useState<string | null>(null);
@@ -126,14 +113,9 @@ export function FamilyPage() {
     setMentionQuery(match[2] ?? "");
   }
 
-  function applyMention(target: "routine" | "plan", memberName: string) {
+  function applyMention(memberName: string) {
     if (mentionStart == null) return;
-    if (target === "routine" && editingRoutine) {
-      const source = editingRoutine.description ?? "";
-      const next = `${source.slice(0, mentionStart)}@${memberName} ${source.slice((mentionStart + 1) + mentionQuery.length)}`;
-      setEditingRoutine({ ...editingRoutine, description: next, assigneeMemberIds: parseAssigneesFromText(next) });
-    }
-    if (target === "plan" && editingPlan) {
+    if (editingPlan) {
       const source = editingPlan.description ?? "";
       const next = `${source.slice(0, mentionStart)}@${memberName} ${source.slice((mentionStart + 1) + mentionQuery.length)}`;
       setEditingPlan({ ...editingPlan, description: next, assigneeMemberIds: parseAssigneesFromText(next) });
@@ -143,35 +125,9 @@ export function FamilyPage() {
     setMentionQuery("");
   }
 
-  async function parseRoutineWithAI() {
-    const description = asText(editingRoutine?.description);
-    if (!description.trim() || routineParsing || members.length === 0) return;
-    setRoutineParsing(true);
-    setAiWarnings([]);
-    setParseError(null);
-    try {
-      const res = await api.parseRoutine(members[0]!.id, description.trim());
-      if (!res.ok || !res.routine) {
-        setParseError(res.error ?? "AI 解析失败");
-        return;
-      }
-      const parsed = res.routine as unknown as FamilyRoutine;
-      setEditingRoutine({
-        ...parsed,
-        id: editingRoutine.id,
-        description: description,
-        assigneeMemberIds: parseAssigneesFromText(description),
-      });
-      setAiWarnings(res.warnings ?? []);
-    } catch (err) {
-      setParseError(err instanceof Error ? err.message : "AI 解析失败");
-    } finally {
-      setRoutineParsing(false);
-    }
-  }
-
   async function parsePlanWithAI() {
-    const description = asText(editingPlan?.description);
+    if (!editingPlan) return;
+    const description = asText(editingPlan.description);
     if (!description.trim() || planParsing || members.length === 0) return;
     setPlanParsing(true);
     setAiWarnings([]);
@@ -194,6 +150,21 @@ export function FamilyPage() {
       setParseError(err instanceof Error ? err.message : "AI 解析失败");
     } finally {
       setPlanParsing(false);
+    }
+  }
+
+  async function saveFamilyRoutine(routine: FamilyRoutine) {
+    try {
+      setPageError(null);
+      const assigneeMemberIds = routine.assigneeMemberIds && routine.assigneeMemberIds.length > 0
+        ? routine.assigneeMemberIds
+        : members.map((m) => m.id);
+      const normalizedRoutine = normalizeRoutineForScheduledActions({ ...routine, assigneeMemberIds });
+      await api.upsertFamilyRoutine(routine.id, normalizedRoutine as unknown as Record<string, unknown>);
+      setEditingRoutine(null);
+      await loadData();
+    } catch (err) {
+      setPageError(err instanceof Error ? err.message : "保存家庭习惯失败");
     }
   }
 
@@ -229,17 +200,6 @@ export function FamilyPage() {
     }
   }
 
-  function formatActionChain(actions?: RoutineAction[]): string[] {
-    if (!actions?.length) return [];
-    const trigger: Record<string, string> = { before: "提前", at: "到时", after: "延后" };
-    return actions.map((a) => {
-      const trig = a.trigger === "at" ? "到时" : `${trigger[a.trigger]}${a.offsetMinutes}分`;
-      if (a.type === "notify") return `${trig} → 微信通知：${a.message ?? ""}`;
-      if (a.type === "plugin") return `${trig} → 插件调用：${a.toolName ?? ""}`;
-      return `${trig} → AI任务：${a.prompt ?? ""}`;
-    });
-  }
-
   return (
     <div className="space-y-6">
       <h1 className="text-2xl font-bold text-stone-800">家庭</h1>
@@ -272,9 +232,17 @@ export function FamilyPage() {
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-sm font-medium text-stone-500">家庭习惯 · {data.routines.length} 项</h3>
           <button onClick={() => {
-            setParseError(null);
-            setAiWarnings([]);
-            setEditingRoutine({ id: `rtn_${Date.now().toString(36)}`, title: "", description: "", weekdays: [], assigneeMemberIds: members.map((m) => m.id) });
+            const newRoutine: FamilyRoutine = {
+              id: `rtn_${Date.now().toString(36)}`,
+              title: "新习惯",
+              description: "新习惯",
+              weekdays: [0, 1, 2, 3, 4, 5, 6],
+              time: "09:00",
+              reminders: [],
+              actions: [],
+              assigneeMemberIds: members.map((m) => m.id),
+            };
+            setEditingRoutine(normalizeRoutineForScheduledActions(newRoutine, { seedAiTaskFromFallback: true }));
           }} className="px-3 py-1.5 rounded-lg text-xs font-medium text-amber-700 bg-amber-50 hover:bg-amber-100">+ 新增家庭习惯</button>
         </div>
         <div className="space-y-2">
@@ -285,7 +253,15 @@ export function FamilyPage() {
                 <p className="text-xs text-stone-500 mt-0.5">{formatAssignees(r.assigneeMemberIds)} · {r.weekdays.map((d) => `周${WEEKDAY_NAMES[d]}`).join("、")}{r.time ? ` · ${r.time}` : ""}</p>
               </div>
               <div className="flex gap-1">
-                <button onClick={() => { setParseError(null); setAiWarnings([]); setEditingRoutine({ ...r, description: asText(r.description) || `${r.title} ${formatAssignees(r.assigneeMemberIds)}` }); }} className="px-2 py-1 text-xs rounded border border-stone-300 text-stone-600 hover:bg-stone-100">编辑</button>
+                <button onClick={() => {
+                  setEditingRoutine(normalizeRoutineForScheduledActions({
+                    ...r,
+                    title: asText(r.title) || "新习惯",
+                    description: asText(r.description),
+                    time: r.time ?? defaultTimeForSlot(r.timeSlot) ?? "09:00",
+                    reminders: r.reminders ?? [],
+                  }));
+                }} className="px-2 py-1 text-xs rounded border border-stone-300 text-stone-600 hover:bg-stone-100">编辑</button>
                 <button onClick={async () => {
                   try {
                     setPageError(null);
@@ -337,58 +313,15 @@ export function FamilyPage() {
       </div>
 
       {editingRoutine && (
-        <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50" onClick={() => setEditingRoutine(null)}>
-          <div className="bg-white rounded-2xl shadow-xl p-6 w-full max-w-xl mx-4" onClick={(e) => e.stopPropagation()}>
-            <h3 className="text-lg font-semibold text-stone-800 mb-3">家庭习惯（自然语言）</h3>
-            <div className="relative">
-              <textarea
-                value={asText(editingRoutine.description)}
-                onChange={(e) => {
-                  const text = e.target.value;
-                  setEditingRoutine({ ...editingRoutine, description: text, assigneeMemberIds: parseAssigneesFromText(text) });
-                  updateMentionState(text, e.target.selectionStart ?? text.length);
-                }}
-                onClick={(e) => updateMentionState((e.target as HTMLTextAreaElement).value, (e.target as HTMLTextAreaElement).selectionStart ?? 0)}
-                onKeyUp={(e) => updateMentionState((e.target as HTMLTextAreaElement).value, (e.target as HTMLTextAreaElement).selectionStart ?? 0)}
-                rows={4}
-                className="w-full px-3 py-2 rounded-lg border border-stone-300 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500"
-                placeholder="例如：每周一三五晚上 19:00 @爸爸 @妈妈 一起散步，提前15分钟提醒"
-              />
-              {mentionOpen && (
-                <div className="absolute z-20 mt-1 w-full rounded-lg border border-stone-200 bg-white shadow-lg max-h-40 overflow-auto">
-                  {mentionCandidates.map((m) => <button key={m.id} onClick={() => applyMention("routine", m.name)} className="w-full text-left px-3 py-2 text-sm hover:bg-stone-50">@{m.name}</button>)}
-                  <button onClick={() => applyMention("routine", "all")} className="w-full text-left px-3 py-2 text-sm hover:bg-stone-50 text-amber-700">@all</button>
-                </div>
-              )}
-            </div>
-            <div className="flex items-center justify-between mt-2">
-              <p className="text-[11px] text-stone-400">仅需输入描述；@ 分配也在描述中完成</p>
-              <button onClick={parseRoutineWithAI} disabled={!asText(editingRoutine.description).trim() || routineParsing} className="px-3 py-1.5 rounded-lg bg-amber-500 text-white text-xs font-medium hover:bg-amber-600 disabled:opacity-50">{routineParsing ? "AI 解析中…" : "AI 解析"}</button>
-            </div>
-            {parseError && <p className="text-xs text-red-500 mt-1">{parseError}</p>}
-            {aiWarnings.length > 0 && <div className="mt-2 p-2 rounded bg-yellow-50 border border-yellow-200">{aiWarnings.map((w, i) => <p key={i} className="text-xs text-yellow-700">{w}</p>)}</div>}
-            {editingRoutine.title && (
-              <div className="mt-3 p-3 rounded-lg bg-stone-50 border border-stone-200">
-                <p className="text-sm font-medium text-stone-800">{editingRoutine.title}</p>
-                <p className="text-xs text-stone-500 mt-1">{formatAssignees(editingRoutine.assigneeMemberIds)} · {editingRoutine.weekdays.map((d) => `周${WEEKDAY_NAMES[d]}`).join("、")}{editingRoutine.time ? ` · ${editingRoutine.time}` : ""}</p>
-                <div className="mt-2 space-y-1">{formatActionChain(editingRoutine.actions).map((line, i) => <p key={i} className="text-xs text-stone-600">{line}</p>)}</div>
-              </div>
-            )}
-            <div className="flex justify-end gap-3 mt-5">
-              <button onClick={() => setEditingRoutine(null)} className="px-4 py-2 rounded-lg text-sm text-stone-600 hover:bg-stone-100">取消</button>
-              <button onClick={async () => {
-                try {
-                  setPageError(null);
-                  await api.upsertFamilyRoutine(editingRoutine.id, { ...editingRoutine, assigneeMemberIds: parseAssigneesFromText(asText(editingRoutine.description)) });
-                  setEditingRoutine(null);
-                  await loadData();
-                } catch (err) {
-                  setPageError(err instanceof Error ? err.message : "保存家庭习惯失败");
-                }
-              }} className="px-4 py-2 rounded-lg bg-amber-500 text-white text-sm font-medium hover:bg-amber-600">保存</button>
-            </div>
-          </div>
-        </div>
+        <RoutineEditorDialog
+          routine={editingRoutine}
+          title={data.routines.some((r) => r.id === editingRoutine.id) ? "编辑家庭习惯" : "新增家庭习惯"}
+          memberOptions={members}
+          requireAssignees
+          onChange={setEditingRoutine}
+          onCancel={() => setEditingRoutine(null)}
+          onSave={saveFamilyRoutine}
+        />
       )}
 
       {editingPlan && (
@@ -411,8 +344,8 @@ export function FamilyPage() {
               />
               {mentionOpen && (
                 <div className="absolute z-20 mt-1 w-full rounded-lg border border-stone-200 bg-white shadow-lg max-h-40 overflow-auto">
-                  {mentionCandidates.map((m) => <button key={m.id} onClick={() => applyMention("plan", m.name)} className="w-full text-left px-3 py-2 text-sm hover:bg-stone-50">@{m.name}</button>)}
-                  <button onClick={() => applyMention("plan", "all")} className="w-full text-left px-3 py-2 text-sm hover:bg-stone-50 text-amber-700">@all</button>
+                  {mentionCandidates.map((m) => <button key={m.id} onClick={() => applyMention(m.name)} className="w-full text-left px-3 py-2 text-sm hover:bg-stone-50">@{m.name}</button>)}
+                  <button onClick={() => applyMention("all")} className="w-full text-left px-3 py-2 text-sm hover:bg-stone-50 text-amber-700">@all</button>
                 </div>
               )}
             </div>

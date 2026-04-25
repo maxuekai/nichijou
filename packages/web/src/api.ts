@@ -229,13 +229,8 @@ export const api = {
   deleteReminder: (id: string) =>
     request<{ ok: boolean }>(`/reminders/${id}`, { method: "DELETE" }),
 
-  // --- AI Routine Parsing ---
+  // --- AI Plan Parsing ---
 
-  parseRoutine: (memberId: string, description: string) =>
-    request<{ ok: boolean; routine?: Record<string, unknown>; warnings?: string[]; error?: string }>(
-      "/routines/parse",
-      { method: "POST", body: JSON.stringify({ memberId, description }) },
-    ),
   parsePlan: (memberId: string, description: string) =>
     request<{ ok: boolean; plan?: Record<string, unknown>; warnings?: string[]; error?: string }>(
       "/plans/parse",
