@@ -129,12 +129,6 @@ export function MembersPage() {
   const [logsExpanded, setLogsExpanded] = useState(false);
   const [triggeringRoutineId, setTriggeringRoutineId] = useState<string | null>(null);
 
-  // Generate routines from profile
-  const [generating, setGenerating] = useState(false);
-  const [generatedRoutines, setGeneratedRoutines] = useState<Routine[] | null>(null);
-  const [selectedGenIdx, setSelectedGenIdx] = useState<Set<number>>(new Set());
-  const [applyingGen, setApplyingGen] = useState(false);
-
   useEffect(() => {
     loadMembers();
   }, []);
@@ -370,46 +364,6 @@ export function MembersPage() {
     } finally {
       setTriggeringRoutineId(null);
     }
-  }
-
-  async function generateFromProfile() {
-    if (!selectedId) return;
-    setGenerating(true);
-    setGeneratedRoutines(null);
-    try {
-      const res = await fetch(`/api/members/${selectedId}/generate-routines`, { method: "POST" });
-      const data = await res.json() as { ok: boolean; routines: Routine[]; error?: string };
-      if (data.ok && data.routines.length > 0) {
-        setGeneratedRoutines(data.routines);
-        setSelectedGenIdx(new Set(data.routines.map((_, i) => i)));
-      } else if (!data.ok) {
-        alert(data.error ?? "生成失败");
-      } else {
-        alert("未从档案中识别出可重复的习惯");
-      }
-    } catch { alert("请求失败"); }
-    setGenerating(false);
-  }
-
-  async function applyGeneratedRoutines() {
-    if (!selectedId || !generatedRoutines) return;
-    setApplyingGen(true);
-    try {
-      setPageError(null);
-      const selected = generatedRoutines.filter((_, i) => selectedGenIdx.has(i));
-      if (selected.length > 0) {
-        await fetch(`/api/members/${selectedId}/apply-routines`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ routines: selected.map((routine) => normalizeRoutineForScheduledActions(routine, { seedAiTaskFromFallback: true })) }),
-        });
-      }
-      setGeneratedRoutines(null);
-      await refreshMemberDetail(selectedId);
-    } catch (err) {
-      setPageError(err instanceof Error ? err.message : "应用生成习惯失败");
-    }
-    setApplyingGen(false);
   }
 
   async function saveOverride(ovr: Override) {
@@ -958,93 +912,7 @@ export function MembersPage() {
                     </pre>
                   )}
 
-                  {!editing && detail.profile && (
-                    <div className="mt-4 pt-4 border-t border-stone-100">
-                      <button
-                        onClick={generateFromProfile}
-                        disabled={generating}
-                        className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-amber-700 bg-amber-50 hover:bg-amber-100 disabled:opacity-50 transition-colors"
-                      >
-                        {generating ? (
-                          <>
-                            <span className="w-3 h-3 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
-                            正在分析档案…
-                          </>
-                        ) : (
-                          "从档案生成 7 days 习惯"
-                        )}
-                      </button>
-                      <p className="text-xs text-stone-400 mt-1.5">
-                        AI 将从档案内容中自动识别每周重复的生活习惯
-                      </p>
-                    </div>
-                  )}
                 </div>
-
-                {generatedRoutines && (
-                  <div className="bg-white rounded-xl border border-amber-200 overflow-hidden">
-                    <div className="p-4 border-b border-amber-100 bg-amber-50/50">
-                      <h3 className="text-sm font-medium text-stone-700">从档案识别的 7 days 习惯</h3>
-                      <p className="text-xs text-stone-500 mt-0.5">选择需要添加的习惯，然后确认保存</p>
-                    </div>
-                    <div className="p-4 space-y-2">
-                      {generatedRoutines.map((routine, idx) => (
-                        <label
-                          key={idx}
-                          className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${
-                            selectedGenIdx.has(idx)
-                              ? "border-amber-300 bg-amber-50/50"
-                              : "border-stone-200 bg-stone-50 opacity-60"
-                          }`}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={selectedGenIdx.has(idx)}
-                            onChange={() => {
-                              setSelectedGenIdx((prev) => {
-                                const next = new Set(prev);
-                                if (next.has(idx)) next.delete(idx); else next.add(idx);
-                                return next;
-                              });
-                            }}
-                            className="mt-0.5 rounded border-stone-300 text-amber-500 focus:ring-amber-500/20"
-                          />
-                          <div className="flex-1 min-w-0">
-                            <p className="text-sm font-medium text-stone-800">{routine.title}</p>
-                            <div className="flex items-center gap-3 mt-1">
-                              <div className="flex gap-0.5">
-                                {[0, 1, 2, 3, 4, 5, 6].map((d) => (
-                                  <span key={d} className={`w-5 h-5 rounded-full text-[10px] flex items-center justify-center ${
-                                    routine.weekdays.includes(d)
-                                      ? "bg-amber-500 text-white font-medium"
-                                      : "bg-stone-200 text-stone-400"
-                                  }`}>{WEEKDAY_NAMES[d]}</span>
-                                ))}
-                              </div>
-                              {routine.time && <span className="text-xs text-stone-500">{routine.time}</span>}
-                              {routine.timeSlot && <span className="text-xs text-stone-400">{formatTimeSlot(routine.timeSlot)}</span>}
-                            </div>
-                          </div>
-                        </label>
-                      ))}
-                    </div>
-                    <div className="p-4 border-t border-amber-100 flex justify-end gap-2">
-                      <button
-                        onClick={() => setGeneratedRoutines(null)}
-                        className="px-4 py-2 rounded-lg text-sm text-stone-500 hover:bg-stone-100 transition-colors"
-                      >
-                        取消
-                      </button>
-                      <button
-                        onClick={applyGeneratedRoutines}
-                        disabled={applyingGen || selectedGenIdx.size === 0}
-                        className="px-4 py-2 rounded-lg bg-amber-500 text-white text-sm font-medium hover:bg-amber-600 disabled:opacity-50 transition-colors"
-                      >
-                        {applyingGen ? "保存中..." : `添加 ${selectedGenIdx.size} 项习惯`}
-                      </button>
-                    </div>
-                  </div>
-                )}
               </div>
             )}
           </div>

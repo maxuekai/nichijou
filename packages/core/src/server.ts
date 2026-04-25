@@ -286,31 +286,6 @@ export class NichijouServer {
         return;
       }
 
-      if (path.match(/^\/api\/members\/[^/]+\/generate-routines$/) && method === "POST") {
-        const memberId = path.split("/")[3]!;
-        try {
-          const routines = await this.butler.generateRoutinesFromProfile(memberId);
-          this.json(res, { ok: true, routines });
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          this.json(res, { ok: false, error: msg });
-        }
-        return;
-      }
-
-      if (path.match(/^\/api\/members\/[^/]+\/apply-routines$/) && method === "POST") {
-        const memberId = path.split("/")[3]!;
-        const body = await this.readBody(req) as { routines: Array<Record<string, unknown>> };
-        try {
-          this.butler.applyRoutines(memberId, body.routines as any);
-          this.json(res, { ok: true });
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          this.json(res, { ok: false, error: msg });
-        }
-        return;
-      }
-
       if (path.startsWith("/api/members/") && method === "DELETE") {
         const memberId = path.split("/")[3]!;
         try {
