@@ -3,7 +3,7 @@ import { api } from "../../api";
 
 interface StatusData {
   setupCompleted: boolean;
-  llm: { baseUrl: string; model: string };
+  llm: { id?: string; name?: string; provider?: string; baseUrl: string; model: string };
   channels: Record<string, { connected: boolean; totalMembers?: number; connectedMembers?: number; expiredMembers?: string[] }>;
   tokenUsage: { promptTokens: number; completionTokens: number };
 }

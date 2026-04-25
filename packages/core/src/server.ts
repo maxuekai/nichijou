@@ -107,12 +107,21 @@ export class NichijouServer {
     try {
       if (path === "/api/status" && method === "GET") {
         const config = this.butler.config.get();
+        const activeModel = this.butler.modelManager.getActiveModel();
         const channels = this.butler.gateway.getAllChannelStatuses();
         const today = new Date().toISOString().slice(0, 10);
         const tokenUsage = this.butler.db.getTokenUsage(today);
         this.json(res, {
           setupCompleted: config.setupCompleted,
-          llm: { baseUrl: config.llm.baseUrl, model: config.llm.model },
+          llm: activeModel
+            ? {
+                id: activeModel.id,
+                name: activeModel.name,
+                provider: activeModel.provider,
+                baseUrl: activeModel.baseUrl,
+                model: activeModel.model,
+              }
+            : { baseUrl: config.llm.baseUrl, model: config.llm.model },
           channels,
           tokenUsage,
         });

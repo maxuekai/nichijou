@@ -33,7 +33,7 @@ interface FamilyMember {
 const STATUS_LABELS: Record<string, { text: string; dot: string; bg: string }> = {
   connected: { text: "在线", dot: "bg-green-500", bg: "bg-green-50 text-green-700" },
   disconnected: { text: "离线", dot: "bg-stone-400", bg: "bg-stone-100 text-stone-500" },
-  expired: { text: "需要重新扫码", dot: "bg-red-500", bg: "bg-red-50 text-red-600" },
+  expired: { text: "失效", dot: "bg-red-500", bg: "bg-red-50 text-red-600" },
 };
 
 export function WeChatPage() {

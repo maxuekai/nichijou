@@ -113,20 +113,6 @@ function getProviderIcon(provider: string) {
   return isLocal ? LocalServiceIcon : CloudServiceIcon;
 }
 
-function formatLastUsed(lastUsedAt?: string): string {
-  if (!lastUsedAt) return "从未使用";
-  const date = new Date(lastUsedAt);
-  const now = new Date();
-  const diffMs = now.getTime() - date.getTime();
-  const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
-  const diffDays = Math.floor(diffHours / 24);
-  
-  if (diffHours < 1) return "刚刚使用";
-  if (diffHours < 24) return `${diffHours} 小时前`;
-  if (diffDays < 7) return `${diffDays} 天前`;
-  return date.toLocaleDateString();
-}
-
 export function ModelsPage() {
   const [models, setModels] = useState<LLMModelConfig[]>([]);
   const [activeModelId, setActiveModelId] = useState<string>("");
@@ -393,7 +379,7 @@ export function ModelsPage() {
 
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="block text-sm font-medium text-stone-700 mb-2">模型名称</label>
+                <label className="block text-sm font-medium text-stone-700 mb-2">显示名称</label>
                 <input
                   type="text"
                   value={newModelData.name}
@@ -526,6 +512,8 @@ export function ModelsPage() {
           const isEditing = editingModelId === model.id;
           const testResult = testResults[model.id];
           const ProviderIcon = getProviderIcon(model.provider);
+          const displayName = model.name.trim();
+          const shouldShowDisplayName = displayName && displayName !== model.model && displayName !== "默认模型";
 
           return (
             <div key={model.id} className="bg-white rounded-xl border border-stone-200 overflow-hidden">
@@ -533,28 +521,31 @@ export function ModelsPage() {
                 className="flex items-center justify-between p-5 cursor-pointer hover:bg-stone-50/50 transition-colors"
                 onClick={() => toggleExpand(model.id)}
               >
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-3 min-w-0">
                   <div className={`w-10 h-10 rounded-lg flex items-center justify-center text-lg ${
                     isActive ? "bg-green-100" : "bg-amber-50"
                   }`}>
                     <ProviderIcon size="md" className={isActive ? "text-green-600" : "text-amber-600"} />
                   </div>
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <h3 className="text-sm font-semibold text-stone-800">{model.name}</h3>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <h3 className="text-sm font-semibold text-stone-800 truncate">{model.model}</h3>
                       {isActive && (
-                        <span className="px-2 py-0.5 text-xs bg-green-100 text-green-800 rounded-full">当前</span>
+                        <span className="shrink-0 px-2 py-0.5 text-xs bg-green-100 text-green-800 rounded-full">默认模型</span>
                       )}
-                      <span className="text-xs text-stone-400">{model.provider}</span>
                     </div>
-                    <div className="flex items-center gap-3 mt-0.5">
-                      <p className="text-xs text-stone-500">{model.model}</p>
-                      <span className="text-xs text-stone-400">•</span>
-                      <p className="text-xs text-stone-400">{formatLastUsed(model.lastUsedAt)}</p>
+                    <div className="flex items-center gap-3 mt-0.5 min-w-0">
+                      {shouldShowDisplayName && (
+                        <>
+                          <p className="text-xs text-stone-500 truncate">{displayName}</p>
+                          <span className="shrink-0 text-xs text-stone-400">•</span>
+                        </>
+                      )}
+                      <p className="text-xs text-stone-400 truncate">{model.baseUrl}</p>
                     </div>
                   </div>
                 </div>
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-3 shrink-0">
                   <span className={`px-2 py-1 text-xs rounded-full ${
                     model.enabled 
                       ? "bg-green-100 text-green-800" 
@@ -691,7 +682,7 @@ export function ModelsPage() {
                     <div className="space-y-4">
                       <div className="grid grid-cols-2 gap-4">
                         <div>
-                          <label className="block text-sm font-medium text-stone-700 mb-2">模型名称</label>
+                          <label className="block text-sm font-medium text-stone-700 mb-2">显示名称</label>
                           <input
                             type="text"
                             value={editingData.name || ""}

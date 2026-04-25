@@ -17,7 +17,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 export const api = {
   getStatus: () => request<{
     setupCompleted: boolean;
-    llm: { baseUrl: string; model: string };
+    llm: { id?: string; name?: string; provider?: string; baseUrl: string; model: string };
     channels: Record<string, unknown>;
     tokenUsage: { promptTokens: number; completionTokens: number };
   }>("/status"),

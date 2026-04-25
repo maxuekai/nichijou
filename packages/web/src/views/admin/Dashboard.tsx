@@ -5,7 +5,7 @@ import { api } from "../../api";
 export function Dashboard() {
   const navigate = useNavigate();
   const [family, setFamily] = useState<{ family: { id: string; name: string; avatar?: string } | null; members: Array<{ id: string; name: string; role: string }> } | null>(null);
-  const [status, setStatus] = useState<{ llm: { model: string; baseUrl: string }; tokenUsage: { promptTokens: number; completionTokens: number } } | null>(null);
+  const [status, setStatus] = useState<{ llm: { name?: string; model: string; baseUrl: string }; tokenUsage: { promptTokens: number; completionTokens: number } } | null>(null);
   const [butlerName, setButlerName] = useState("Nichijou");
 
   useEffect(() => {
@@ -57,7 +57,6 @@ export function Dashboard() {
               </div>
               <div>
                 <p className="text-lg font-semibold text-stone-800">{butlerName}</p>
-                <p className="text-xs text-stone-500">点击进入管家设置</p>
               </div>
             </div>
           </button>
@@ -74,8 +73,6 @@ export function Dashboard() {
                 </div>
               ))}
             </div>
-            <p className="text-lg font-semibold text-stone-800">{family?.members?.length ?? 0} 位成员</p>
-            <p className="text-xs text-stone-500">点击进入成员管理</p>
           </button>
         </div>
       </section>
@@ -83,11 +80,14 @@ export function Dashboard() {
       <section className="space-y-3">
         <h2 className="text-sm font-semibold text-stone-500 tracking-wide">AI 与运行</h2>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <div className="bg-white rounded-xl border border-stone-200 p-6">
+          <button
+            onClick={() => navigate("/admin/models")}
+            className="w-full bg-white rounded-xl border border-stone-200 p-6 text-left hover:border-amber-300 hover:shadow-sm transition-all"
+          >
             <h3 className="text-sm font-medium text-stone-500 mb-3">AI 模型</h3>
             <p className="text-2xl font-bold text-stone-800">{status?.llm?.model ?? "-"}</p>
             <p className="text-sm text-stone-500 mt-1 truncate">{status?.llm?.baseUrl ?? "-"}</p>
-          </div>
+          </button>
 
           <div className="bg-white rounded-xl border border-stone-200 p-6">
             <h3 className="text-sm font-medium text-stone-500 mb-3">今日 Token</h3>
