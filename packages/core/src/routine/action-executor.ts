@@ -9,7 +9,7 @@ import type { Gateway } from "../gateway/gateway.js";
 import type { Database } from "../db/database.js";
 import type { ConfigManager } from "../storage/config.js";
 
-type ChatForAction = (memberId: string, prompt: string) => Promise<string>;
+type AiTaskRunner = (memberId: string, routine: Routine, action: RoutineAction) => Promise<string>;
 interface ActionExecutionContext {
   latestTaskResult?: string;
   hasNotifyAction: boolean;
@@ -23,7 +23,7 @@ const TIMESLOT_DEFAULTS: Record<string, string> = {
 
 export class ActionExecutor {
   private cronTask: cron.ScheduledTask | null = null;
-  private chatFn: ChatForAction | null = null;
+  private aiTaskRunner: AiTaskRunner | null = null;
 
   constructor(
     private routineEngine: RoutineEngine,
@@ -35,8 +35,8 @@ export class ActionExecutor {
     private configManager?: ConfigManager,
   ) {}
 
-  setChatFunction(fn: ChatForAction): void {
-    this.chatFn = fn;
+  setAiTaskRunner(fn: AiTaskRunner): void {
+    this.aiTaskRunner = fn;
   }
 
   start(): void {
@@ -145,15 +145,29 @@ export class ActionExecutor {
   ): Promise<void> {
     console.log(`[ActionExecutor] 执行 action: ${action.type} for routine "${routine.title}" member=${memberId}`);
     
+    const formatAiTaskFailure = (message: string): string => `定时任务「${routine.title}」执行失败：${message}`;
+
     // 执行前参数验证
     const validationResult = this.validateActionParameters(action);
     if (!validationResult.isValid) {
+      const validationMessage = `参数验证失败: ${validationResult.errors.join(", ")}`;
       console.error(`[ActionExecutor] 参数验证失败 ${action.id}:`, validationResult.errors);
+      if (action.type === "ai_task") {
+        const failureResult = formatAiTaskFailure(validationMessage);
+        context.latestTaskResult = failureResult;
+        if (!context.hasNotifyAction && (action.channel === "wechat" || action.channel === "both" || !action.channel)) {
+          try {
+            await this.gateway.sendToMember(memberId, failureResult);
+          } catch (err) {
+            console.error(`[ActionExecutor] sendToMember failed:`, err);
+          }
+        }
+      }
       this.db.logActionExecution(
         memberId, 
         routine.id, 
         action.id, 
-        `参数验证失败: ${validationResult.errors.join(", ")}`, 
+        action.type === "ai_task" ? context.latestTaskResult ?? validationMessage : validationMessage,
         false, 
         minuteKey
       );
@@ -201,38 +215,44 @@ export class ActionExecutor {
 
         case "ai_task": {
           if (!action.prompt) {
-            result = "prompt not configured";
+            result = formatAiTaskFailure("prompt not configured");
             success = false;
+            context.latestTaskResult = result;
             break;
           }
-          const taskPrompt = `[定时任务] 习惯「${routine.title}」触发了以下任务，请执行并给出简洁回复：\n\n${action.prompt}`;
-          if (this.chatFn) {
-            result = await this.chatFn(memberId, taskPrompt);
+          if (this.aiTaskRunner) {
+            result = await this.aiTaskRunner(memberId, routine, action);
+            if (!result.trim()) {
+              result = formatAiTaskFailure("AI 未返回结果");
+              success = false;
+            }
           } else if (this.provider) {
             const resp = await this.provider.chat({
               messages: [
                 { role: "system", content: "你是家庭 AI 管家，请根据以下任务简洁回答。" },
-                { role: "user", content: taskPrompt },
+                { role: "user", content: `[定时任务] 习惯「${routine.title}」触发了以下任务，请执行并给出简洁回复：\n\n${action.prompt}` },
               ],
             });
             result = resp.message.content;
           } else {
-            result = "no LLM provider configured";
+            result = formatAiTaskFailure("no LLM provider configured");
             success = false;
           }
-          if (success && result) context.latestTaskResult = result;
+          if (result) context.latestTaskResult = result;
           break;
         }
       }
     } catch (err) {
-      result = err instanceof Error ? err.message : String(err);
+      const message = err instanceof Error ? err.message : String(err);
+      result = action.type === "ai_task" ? formatAiTaskFailure(message) : message;
       success = false;
+      if (action.type === "ai_task") context.latestTaskResult = result;
     }
 
     const channel = action.channel ?? "wechat";
     const shouldSendWeChat = channel === "wechat" || channel === "both";
     const shouldDeferToNotify = action.type !== "notify" && context.hasNotifyAction;
-    if (success && result && shouldSendWeChat && !shouldDeferToNotify) {
+    if (result && shouldSendWeChat && !shouldDeferToNotify && (success || action.type === "ai_task")) {
       try {
         await this.gateway.sendToMember(memberId, result);
       } catch (err) {
@@ -409,14 +429,13 @@ export class ActionExecutor {
           }
 
           case "ai_task": {
-            const taskPrompt = `【习惯任务】${routine.title}\n\n${action.prompt}`;
-            
-            if (this.chatFn) {
-              result = await this.chatFn(memberId, taskPrompt);
+            if (this.aiTaskRunner) {
+              result = await this.aiTaskRunner(memberId, routine, action);
             } else {
               result = `AI任务模拟结果: ${action.prompt}`;
             }
-            success = true;
+            success = result.trim().length > 0;
+            if (!success) result = "AI任务未返回结果";
             break;
           }
 

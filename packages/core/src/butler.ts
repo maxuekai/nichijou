@@ -102,7 +102,7 @@ export class ButlerService {
       this.routineEngine, this.familyManager, this.pluginHost,
       this.gateway, null, this.db, this.config,
     );
-    this.actionExecutor.setChatFunction((memberId, prompt) => this.chat(memberId, prompt));
+    this.actionExecutor.setAiTaskRunner((memberId, routine, action) => this.runRoutineAiTask(memberId, routine, action));
 
     // 执行配置迁移
     this.modelManager.migrateFromLegacyConfig();
@@ -1187,6 +1187,110 @@ ${conversationText}
     }
 
     return prompt;
+  }
+
+  private buildRoutineAiTaskSystemPrompt(member: FamilyMember, routine: Routine): string {
+    const { display, iso } = this.formatNow();
+    let prompt = [
+      "你是家庭 AI 管家，正在执行一个 7 days 定时习惯任务。",
+      "这是一次全新的独立执行上下文，不包含成员的历史聊天记录。",
+      "如果任务需要实时信息、外部数据或项目内数据，必须调用可用工具获取，不要伪造工具结果。",
+      "所有可用工具已通过 tools schema 提供；可按需多次调用工具，直到任务完成。",
+      "最终只返回要发送给用户的结果文本。不要调用消息发送类工具给当前用户发送最终结果，系统会在后续 notify action 中统一发送微信通知。",
+      "除非任务内容明确要求通知其他家庭成员，否则不要调用 send_message。",
+      "不要调用 clear_context，除非任务内容明确要求清除上下文。",
+      "",
+      "# 当前时间",
+      `现在是 ${display}`,
+      `ISO: ${iso}`,
+      "请根据此精确时间推算任务中涉及的具体日期时间。",
+      "",
+      "# 当前成员",
+      `成员 ID: ${member.id}`,
+      `成员名称: ${member.preferredName || member.name}`,
+    ].join("\n");
+
+    const profile = (this.storage.readMemberProfile(member.id) ?? "").trim();
+    if (profile) {
+      prompt += `\n\n# 成员档案\n${profile}`;
+    }
+
+    const family = this.familyManager.getFamily();
+    if (family?.homeAdcode || family?.homeCity) {
+      prompt += "\n\n# 家庭常居地\n";
+      prompt += `优先位置参数：${family.homeAdcode ?? family.homeCity}\n`;
+      prompt += "当调用天气相关插件工具且用户未提供城市时，优先使用此位置。";
+    }
+
+    const tz = this.config.get().timezone || "Asia/Shanghai";
+    const plan = this.routineEngine.resolveDayPlan(member.id, new Date(), tz);
+    if (plan.items.length > 0) {
+      prompt += "\n\n# 今日计划\n";
+      for (const item of plan.items) {
+        const itemTime = item.time ?? item.timeSlot ?? "";
+        prompt += `- ${itemTime} ${item.title}\n`;
+      }
+    }
+
+    prompt += `\n\n# 当前定时习惯\n习惯名称: ${routine.title}`;
+    return prompt;
+  }
+
+  async runRoutineAiTask(memberId: string, routine: Routine, action: RoutineAction): Promise<string> {
+    const member = this.familyManager.getMember(memberId);
+    if (!member) {
+      throw new Error(`成员不存在: ${memberId}`);
+    }
+    const taskPrompt = action.prompt?.trim();
+    if (!taskPrompt) {
+      throw new Error("ai_task prompt 为空");
+    }
+
+    const previousMemberId = this.currentMemberId;
+    this.currentMemberId = memberId;
+
+    const session = createAgentSession({
+      provider: this.getProvider(),
+      systemPrompt: this.buildRoutineAiTaskSystemPrompt(member, routine),
+      tools: this.buildTools(),
+      temperature: 0.3,
+    });
+
+    const model = this.config.get().llm.model;
+    let lastTurnText = "";
+    let agentError: Error | null = null;
+    const unsubscribe = session.subscribe((event) => {
+      if (event.type === "turn_end") {
+        if (event.message.content?.trim()) {
+          lastTurnText = event.message.content.trim();
+        }
+        if (event.usage) {
+          this.db.logTokenUsage(memberId, event.usage.promptTokens, event.usage.completionTokens, model);
+        }
+      } else if (event.type === "error") {
+        agentError = event.error;
+      }
+    });
+
+    try {
+      const fullResponse = await session.prompt([
+        "# 定时任务内容",
+        taskPrompt,
+        "",
+        "请完成以上任务。需要工具时先调用工具；任务完成后只输出最终要发送给用户的结果。",
+      ].join("\n"));
+      if (agentError) {
+        throw agentError;
+      }
+      const result = (lastTurnText || fullResponse).trim();
+      if (!result) {
+        throw new Error("AI 任务未返回最终结果");
+      }
+      return result;
+    } finally {
+      unsubscribe();
+      this.currentMemberId = previousMemberId;
+    }
   }
 
   getOrCreateSession(memberId: string, isOnboarding = false): AgentSession {
