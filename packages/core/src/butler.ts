@@ -863,7 +863,6 @@ ${conversationText}
       const provider = this.getProvider();
       const response = await provider.chat({
         messages: [{ role: "user", content: summaryPrompt }],
-        temperature: 0.3,
         maxTokens: 500,
       });
 
@@ -1168,7 +1167,6 @@ ${conversationText}
       const provider = this.getProvider();
       const response = await provider.chat({
         messages: [{ role: "user", content: summaryPrompt }],
-        temperature: 0.3,
         maxTokens: 800,
       });
 
@@ -1645,7 +1643,6 @@ ${conversationText}
       provider: this.getProvider(),
       systemPrompt: this.buildRoutineAiTaskSystemPrompt(member, routine),
       tools: this.buildTools(),
-      temperature: 0.3,
     });
 
     const model = this.config.get().llm.model;
@@ -2104,7 +2101,6 @@ ${conversationText}
           media,
         },
       ],
-      temperature: 0.2,
       maxTokens: 1200,
     });
 
