@@ -2,6 +2,7 @@ export { createProvider } from "./provider.js";
 export { OpenAICompatibleProvider } from "./openai.js";
 export {
   createImageGenerationService,
+  MiniMaxImageGenerationService,
   OpenAICompatibleImageGenerationService,
   type ImageGenerationConfig,
   type ImageGenerationRequest,

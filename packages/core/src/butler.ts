@@ -400,6 +400,7 @@ export class ButlerService {
   }
 
   private currentMemberId: string | undefined;
+  private currentImageGenerationReferenceImages: MediaContent[] = [];
   
   // 上下文管理配置
   private readonly MAX_CONTEXT_MESSAGES = 100; // 最大消息数
@@ -464,6 +465,15 @@ export class ButlerService {
             description: "图片尺寸。默认 1024x1024。",
             enum: ["1024x1024", "1024x1536", "1536x1024", "auto"],
           },
+          use_reference_images: {
+            type: "boolean",
+            description: "当用户要求基于当前发送或引用的图片生成、改图、换风格时设为 true；纯文生图设为 false。",
+          },
+          reference_type: {
+            type: "string",
+            description: "MiniMax 图生图参考类型。默认 character。",
+            enum: ["character"],
+          },
         },
         required: ["prompt"],
       },
@@ -483,14 +493,18 @@ export class ButlerService {
     }
 
     const size = typeof params.size === "string" && params.size.trim() ? params.size.trim() : "1024x1024";
+    const useReferenceImages = params.use_reference_images !== false;
+    const referenceType = params.reference_type === "character" ? "character" : undefined;
+    const referenceImages = useReferenceImages ? this.currentImageGenerationReferenceImages : [];
     try {
       const service = createImageGenerationService({
+        provider: selected.model.provider,
         baseUrl: selected.model.baseUrl,
         apiKey: selected.model.apiKey,
         model: selected.model.model,
         timeout: selected.model.timeout,
       });
-      const generated = await service.generate({ prompt, size });
+      const generated = await service.generate({ prompt, size, referenceImages, referenceType });
       const mediaManager = this.storage.getMediaManager(this.db, this.config.getMultimediaConfig());
       const media = await mediaManager.saveMediaFile(
         generated.buffer,
@@ -514,6 +528,7 @@ export class ButlerService {
           "图片已生成。",
           `Agent: ${selected.agent.name}`,
           `提示词: ${prompt}`,
+          `参考图片: ${referenceImages.length} 张`,
           `媒体地址: ${mediaUrl}`,
           delivery,
         ].join("\n"),
@@ -1546,6 +1561,7 @@ ${conversationText}
     prompt += `\n重要提示：当需要操作其他家庭成员时，请优先使用 resolve_member 工具通过姓名或昵称查找准确的成员ID。\n`;
     if (this.getUsableAgentForCapability("image_generation")) {
       prompt += `当用户明确要求画图、生成图片、制作视觉图或海报时，调用 generate_image 工具，不要只用文字描述图片。\n`;
+      prompt += `当用户发送或引用了图片，并要求基于该图片生成、改图、换风格、做成海报或转成其他视觉效果时，调用 generate_image，并设置 use_reference_images=true。\n`;
     }
 
     prompt += `\n# 消息与提醒使用规则\n\n`;
@@ -2229,6 +2245,33 @@ ${conversationText}
     return "当前主模型不支持图片理解，且没有可用的图片理解 Agent。请切换到支持视觉输入的模型，或在 Agent 管理中配置启用 vision 能力的图片理解 Agent。";
   }
 
+  private isImageGenerationIntent(text: string): boolean {
+    return /画|绘制|生成.*图|生图|图片生成|改图|修图|换风格|风格化|变成|改成|转成|做成|海报|插画|漫画|照片|参考.*图/.test(text);
+  }
+
+  private extractImageGenerationReferenceImages(msg: InboundMessage): MediaContent[] {
+    const images: MediaContent[] = [];
+    const seen = new Set<string>();
+    const add = (media?: MediaContent) => {
+      if (!media || media.type !== "image" || !media.filePath) return;
+      const key = media.hash || media.filePath;
+      if (seen.has(key)) return;
+      seen.add(key);
+      images.push(media);
+    };
+
+    for (const media of msg.mediaContent ?? []) {
+      add(media);
+    }
+    for (const reference of msg.references ?? []) {
+      for (const media of reference.mediaContent ?? []) {
+        add(media);
+      }
+    }
+
+    return images;
+  }
+
   private createPromptInput(message: string, modelMedia: MediaContent[]): string | MultimodalMessage {
     if (modelMedia.length === 0) return message;
     return {
@@ -2457,6 +2500,7 @@ ${conversationText}
     });
 
     const model = this.config.get().llm.model;
+    const imageGenerationReferenceImages = this.extractImageGenerationReferenceImages(msg);
 
     if (modelMedia.length > 0 && !this.supportsImageUnderstanding()) {
       let visionAnalysis: string | null = null;
@@ -2489,50 +2533,67 @@ ${conversationText}
       }
 
       if (!visionAnalysis) {
-        const reply = this.imageUnsupportedMessage();
-        await this.stopTyping(member.id);
-        await this.gateway.sendToMember(member.id, reply);
+        const canUseImageAsGenerationReference = imageGenerationReferenceImages.length > 0
+          && this.getUsableAgentForCapability("image_generation")
+          && this.isImageGenerationIntent(msg.text);
+        if (canUseImageAsGenerationReference) {
+          enhancedMessage += "\n\n[图片生图参考]\n用户发送的图片将作为 generate_image 工具的参考图。主模型不需要直接理解图片内容。";
+          modelMedia = [];
+          this.systemLogger.logRuntime({
+            source: "Butler.handleMessage",
+            message: "Continuing without image understanding because image generation can use image reference",
+            input: { memberId: member.id, mediaCount: imageGenerationReferenceImages.length, text: msg.text },
+            details: { model },
+            traceId,
+          });
+        } else {
+          const reply = this.imageUnsupportedMessage();
+          await this.stopTyping(member.id);
+          await this.gateway.sendToMember(member.id, reply);
+          this.systemLogger.logRuntime({
+            source: "Butler.handleMessage",
+            message: "Image message rejected because no usable vision agent is configured",
+            input: { memberId: member.id, mediaCount: modelMedia.length },
+            details: { model },
+            traceId,
+          });
+          this.db.saveConversationLogWithMedia(
+            member.id,
+            member.name,
+            msg.text,
+            reply,
+            JSON.stringify([]),
+            msg.mediaContent || [],
+            pipelineProcessed,
+          );
+          this.db.saveChat(member.id, "user", msg.text);
+          this.db.saveChat(member.id, "assistant", reply);
+          return;
+        }
+      }
+
+      if (visionAnalysis) {
+        enhancedMessage += `\n\n[图片理解结果]\n${visionAnalysis}`;
+        const analyzedMediaCount = modelMedia.length;
+        for (let index = 0; index < modelMedia.length; index++) {
+          const media = modelMedia[index]!;
+          pipelineProcessed.push({
+            mediaId: media.hash || media.filePath || `media-${index}`,
+            processType: "analysis",
+            result: visionAnalysis,
+            success: true,
+          });
+        }
+        modelMedia = [];
         this.systemLogger.logRuntime({
           source: "Butler.handleMessage",
-          message: "Image message rejected because no usable vision agent is configured",
-          input: { memberId: member.id, mediaCount: modelMedia.length },
+          message: "Image analyzed by vision agent",
+          input: { memberId: member.id, mediaCount: analyzedMediaCount },
+          output: { visionAnalysis },
           details: { model },
           traceId,
         });
-        this.db.saveConversationLogWithMedia(
-          member.id,
-          member.name,
-          msg.text,
-          reply,
-          JSON.stringify([]),
-          msg.mediaContent || [],
-          pipelineProcessed,
-        );
-        this.db.saveChat(member.id, "user", msg.text);
-        this.db.saveChat(member.id, "assistant", reply);
-        return;
       }
-
-      enhancedMessage += `\n\n[图片理解结果]\n${visionAnalysis}`;
-      const analyzedMediaCount = modelMedia.length;
-      for (let index = 0; index < modelMedia.length; index++) {
-        const media = modelMedia[index]!;
-        pipelineProcessed.push({
-          mediaId: media.hash || media.filePath || `media-${index}`,
-          processType: "analysis",
-          result: visionAnalysis,
-          success: true,
-        });
-      }
-      modelMedia = [];
-      this.systemLogger.logRuntime({
-        source: "Butler.handleMessage",
-        message: "Image analyzed by vision agent",
-        input: { memberId: member.id, mediaCount: analyzedMediaCount },
-        output: { visionAnalysis },
-        details: { model },
-        traceId,
-      });
     }
 
     const events: Array<{ type: string; data: unknown }> = [];
@@ -2555,6 +2616,8 @@ ${conversationText}
       }
     });
 
+    const previousImageGenerationReferenceImages = this.currentImageGenerationReferenceImages;
+    this.currentImageGenerationReferenceImages = imageGenerationReferenceImages;
     try {
       await session.prompt(this.createPromptInput(enhancedMessage, modelMedia));
     } catch (err) {
@@ -2627,6 +2690,7 @@ ${conversationText}
       }
     } finally {
       unsubscribe();
+      this.currentImageGenerationReferenceImages = previousImageGenerationReferenceImages;
     }
 
     const reply = lastTurnText || "（无回复）";
