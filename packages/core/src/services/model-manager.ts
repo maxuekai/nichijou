@@ -1,6 +1,6 @@
 import { ConfigManager } from "../storage/config.js";
 import type { LLMModelConfig, ModelsConfig } from "../storage/config.js";
-import { createProvider } from "@nichijou/ai";
+import { createImageGenerationService, createProvider } from "@nichijou/ai";
 import type { LLMProvider } from "@nichijou/ai";
 import type { AgentContext } from "../types/agent.js";
 
@@ -217,8 +217,25 @@ export class ModelManager {
   /**
    * 测试模型连接
    */
-  async testModel(modelConfig: LLMModelConfig): Promise<{success: boolean, error?: string}> {
+  async testModel(modelConfig: LLMModelConfig): Promise<{success: boolean, error?: string, kind?: "chat" | "image_generation"}> {
     try {
+      if (this.shouldTestAsImageGeneration(modelConfig)) {
+        const service = createImageGenerationService({
+          provider: modelConfig.provider,
+          baseUrl: modelConfig.baseUrl,
+          apiKey: modelConfig.apiKey,
+          model: modelConfig.model,
+          timeout: modelConfig.timeout,
+        });
+
+        await service.generate({
+          prompt: "connection test, simple geometric icon",
+          size: "1024x1024",
+        });
+
+        return { success: true, kind: "image_generation" };
+      }
+
       const provider = this.decorateProvider(createProvider({
         provider: modelConfig.provider,
         baseUrl: modelConfig.baseUrl,
@@ -231,19 +248,37 @@ export class ModelManager {
       }));
 
       // 发送一个简单的测试消息
-      const response = await provider.chat({
+      await provider.chat({
         messages: [{ role: "user", content: "Hello, this is a connection test. Please respond with 'OK'." }],
         temperature: modelConfig.temperature ?? 0.1,
         maxTokens: 10
       });
 
-      return { success: true };
+      return { success: true, kind: "chat" };
     } catch (error) {
       return {
         success: false,
         error: error instanceof Error ? error.message : String(error)
       };
     }
+  }
+
+  private shouldTestAsImageGeneration(modelConfig: LLMModelConfig): boolean {
+    const cfg = this.config.get();
+    const boundImageGenerationAgent = (cfg.agents ?? []).some((agent) => (
+      agent.modelId === modelConfig.id && agent.capabilities.includes("image_generation")
+    ));
+    if (boundImageGenerationAgent) return true;
+
+    const provider = modelConfig.provider.toLowerCase();
+    const baseUrl = modelConfig.baseUrl.toLowerCase();
+    const model = modelConfig.model.toLowerCase();
+
+    if ((provider.includes("minimax") || baseUrl.includes("minimax.io") || baseUrl.includes("minimaxi.com")) && /image|t2i|i2i/.test(model)) {
+      return true;
+    }
+
+    return /^(dall-e-|gpt-image-)|(?:^|[-_.])(flux|imagen|image|sdxl|stable-diffusion|wanx)(?:[-_.]|$)/.test(model);
   }
 
   /**

@@ -2,6 +2,8 @@ import { WeChatClient, MessageType } from "wechat-ilink-client";
 import type { WeixinMessage } from "wechat-ilink-client";
 import type { ChannelStatus, MultimediaConfig } from "@nichijou/shared";
 import { generateId } from "@nichijou/shared";
+import { access, copyFile, mkdir } from "node:fs/promises";
+import { extname, join } from "node:path";
 import type { Channel } from "@nichijou/core";
 import type { Gateway } from "@nichijou/core";
 import type { StorageManager } from "@nichijou/core";
@@ -453,7 +455,48 @@ export class WeChatChannel implements Channel {
 
   async sendMedia(memberId: string, filePath: string, caption?: string): Promise<void> {
     const { client, toUserId, contextToken } = this.resolveSendContext(memberId);
-    await client.sendMedia(toUserId, filePath, caption, contextToken);
+    const sendPath = await this.prepareMediaPathForSend(filePath);
+    try {
+      console.log(`[WeChat] 发送媒体给成员 ${memberId}: ${sendPath}`);
+      await client.sendMedia(toUserId, sendPath, caption, contextToken);
+      console.log(`[WeChat] 媒体发送成功: ${sendPath}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[WeChat] 媒体发送失败 (${sendPath}): ${message}`);
+      throw new Error(`微信媒体发送失败: ${message}`);
+    }
+  }
+
+  private async prepareMediaPathForSend(filePath: string): Promise<string> {
+    await access(filePath);
+    if (extname(filePath)) {
+      return filePath;
+    }
+
+    const type = await this.detectImageExtension(filePath);
+    const sendDir = this.storage.resolve("wechat", "send-cache");
+    await mkdir(sendDir, { recursive: true });
+    const sendPath = join(sendDir, `${generateId("wechat-media")}${type}`);
+    await copyFile(filePath, sendPath);
+    return sendPath;
+  }
+
+  private async detectImageExtension(filePath: string): Promise<string> {
+    const { readFile } = await import("node:fs/promises");
+    const header = await readFile(filePath, { encoding: null });
+    if (header.length >= 3 && header[0] === 0xff && header[1] === 0xd8 && header[2] === 0xff) {
+      return ".jpg";
+    }
+    if (header.length >= 8 && header.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
+      return ".png";
+    }
+    if (header.length >= 12 && header.subarray(0, 4).toString("ascii") === "RIFF" && header.subarray(8, 12).toString("ascii") === "WEBP") {
+      return ".webp";
+    }
+    if (header.length >= 6 && (header.subarray(0, 6).toString("ascii") === "GIF87a" || header.subarray(0, 6).toString("ascii") === "GIF89a")) {
+      return ".gif";
+    }
+    return ".bin";
   }
 
   private resolveSendContext(memberId: string): { client: WeChatClient; toUserId: string; contextToken: string } {

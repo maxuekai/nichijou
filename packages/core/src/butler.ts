@@ -519,7 +519,20 @@ export class ButlerService {
           await this.gateway.sendMediaToMember(this.currentMemberId, media.filePath, "生成图片");
           delivery = "已发送给当前用户。";
         } catch (error) {
-          delivery = `发送失败，已保存为媒体文件：${error instanceof Error ? error.message : String(error)}`;
+          const message = error instanceof Error ? error.message : String(error);
+          delivery = `发送失败，已保存为媒体文件：${message}`;
+          try {
+            await this.gateway.sendToMember(
+              this.currentMemberId,
+              [
+                "图片已生成，但直接发送图片失败。",
+                `媒体地址: ${mediaUrl}`,
+                `失败原因: ${message}`,
+              ].join("\n"),
+            );
+          } catch {
+            // Keep the original tool result as the final fallback.
+          }
         }
       }
 

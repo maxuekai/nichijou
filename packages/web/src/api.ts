@@ -113,7 +113,7 @@ export const api = {
     isDefault: boolean;
     createdAt: string;
     lastUsedAt?: string;
-  }) => request<{ success: boolean; error?: string }>(`/models/${config.id}/test`, { method: "POST" }),
+  }) => request<{ success: boolean; error?: string; kind?: "chat" | "image_generation" }>(`/models/${config.id}/test`, { method: "POST" }),
   activateModel: (id: string) => request<{ ok: boolean }>(`/models/${id}/activate`, { method: "PUT" }),
 
   // Agents API
