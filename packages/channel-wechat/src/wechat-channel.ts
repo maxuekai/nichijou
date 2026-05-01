@@ -562,7 +562,8 @@ export class WeChatChannel implements Channel {
     caption?: string,
   ): Promise<void> {
     const uploaded = await this.uploadImageWithThumbnail(client, toUserId, filePath);
-    const aesKeyBase64 = Buffer.from(uploaded.aeskeyHex, "hex").toString("base64");
+    // iLink outbound image messages expect the hex AES key string to be base64 encoded.
+    const aesKeyBase64 = Buffer.from(uploaded.aeskeyHex).toString("base64");
     const imageItem: {
       media: {
         encrypt_query_param: string;
