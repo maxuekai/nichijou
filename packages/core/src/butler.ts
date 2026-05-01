@@ -212,6 +212,7 @@ export class ButlerService {
     if (context?.agentId) {
       const agentModel = this.modelManager.getModelForAgent(context.agentId);
       if (agentModel && agentModel.enabled) {
+        const agent = this.agentManager.getAgent(context.agentId);
         return this.wrapProviderWithLogging(createProvider({
           provider: agentModel.provider,
           baseUrl: agentModel.baseUrl,
@@ -220,6 +221,7 @@ export class ButlerService {
           timeout: agentModel.timeout,
           temperature: agentModel.temperature,
           thinkingMode: agentModel.thinkingMode,
+          supportsVision: agent?.capabilities.includes("vision"),
           timeZone,
         }));
       }
@@ -2077,7 +2079,7 @@ ${conversationText}
 
   private async describeImagesWithVisionAgent(media: MediaContent[], userText: string): Promise<string | null> {
     const selected = this.getUsableAgentForCapability("vision");
-    if (!selected || !this.modelSupportsImageUnderstanding(selected.model)) {
+    if (!selected) {
       return null;
     }
 

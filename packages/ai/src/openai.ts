@@ -118,6 +118,7 @@ function hasImageInput(messages: ConversationMessage[]): boolean {
 }
 
 function supportsImageInput(config: ProviderConfig): boolean {
+  if (config.supportsVision) return true;
   if (isDeepSeekProvider(config)) return false;
 
   const provider = config.provider?.toLowerCase() ?? "";

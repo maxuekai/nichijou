@@ -8,6 +8,7 @@ export interface ProviderConfig {
   timeout?: number;
   temperature?: number;
   thinkingMode?: boolean;
+  supportsVision?: boolean;
   timeZone?: string;
 }
 
