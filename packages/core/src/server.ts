@@ -54,6 +54,7 @@ const MAX_AVATAR_REQUEST_BYTES = Math.ceil(MAX_AVATAR_IMAGE_BYTES * 4 / 3) + 409
 const CONFIG_PATCH_KEYS = new Set([
   "llm",
   "models",
+  "agents",
   "port",
   "timezone",
   "setupCompleted",
@@ -979,6 +980,52 @@ export class NichijouServer {
         try {
           this.butler.modelManager.activateModel(modelId);
           this.butler.refreshProvider(); // 激活后刷新provider
+          this.json(res, { ok: true });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          this.json(res, { ok: false, error: msg });
+        }
+        return;
+      }
+
+      // --- Agents API ---
+      if (path === "/api/agents" && method === "GET") {
+        this.json(res, { agents: this.butler.agentManager.getAllAgents() });
+        return;
+      }
+
+      if (path === "/api/agents" && method === "POST") {
+        const body = await this.readBody(req) as Omit<import("./types/agent.js").AgentConfig, "id">;
+        try {
+          const id = this.butler.agentManager.createAgent(body);
+          this.butler.refreshProvider();
+          this.json(res, { ok: true, id });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          this.json(res, { ok: false, error: msg });
+        }
+        return;
+      }
+
+      if (path.match(/^\/api\/agents\/[^/]+$/) && method === "PUT") {
+        const agentId = path.split("/")[3]!;
+        const body = await this.readBody(req) as Partial<import("./types/agent.js").AgentConfig>;
+        try {
+          this.butler.agentManager.updateAgent(agentId, body);
+          this.butler.refreshProvider();
+          this.json(res, { ok: true });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          this.json(res, { ok: false, error: msg });
+        }
+        return;
+      }
+
+      if (path.match(/^\/api\/agents\/[^/]+$/) && method === "DELETE") {
+        const agentId = path.split("/")[3]!;
+        try {
+          this.butler.agentManager.deleteAgent(agentId);
+          this.butler.refreshProvider();
           this.json(res, { ok: true });
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);

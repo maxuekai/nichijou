@@ -11,5 +11,6 @@ export { DownloadTaskManager, type DownloadTask, type DownloadProgress } from ".
 export { ErrorHandler } from "./services/error-handler.js";
 export { SystemLogger, type StructuredLogPayload } from "./services/system-logger.js";
 export { ThreadContextBuilder } from "./services/thread-context-builder.js";
+export { AgentManager } from "./services/agent-manager.js";
 export { NichijouServer } from "./server.js";
 export { ButlerService } from "./butler.js";

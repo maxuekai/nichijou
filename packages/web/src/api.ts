@@ -2,6 +2,17 @@ import type { ConversationLogWithMedia, MediaContent, ProcessedMediaInfo, System
 
 const BASE = "/api";
 
+export type AgentCapability = "vision" | "image_generation";
+
+export interface AgentConfig {
+  id: string;
+  name: string;
+  description: string;
+  modelId: string;
+  enabled: boolean;
+  capabilities: AgentCapability[];
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     headers: { "Content-Type": "application/json" },
@@ -86,6 +97,15 @@ export const api = {
     lastUsedAt?: string;
   }) => request<{ success: boolean; error?: string }>(`/models/${config.id}/test`, { method: "POST" }),
   activateModel: (id: string) => request<{ ok: boolean }>(`/models/${id}/activate`, { method: "PUT" }),
+
+  // Agents API
+  getAgents: () => request<{ agents: AgentConfig[] }>("/agents"),
+  addAgent: (config: Omit<AgentConfig, "id">) =>
+    request<{ ok: boolean; id: string; error?: string }>("/agents", { method: "POST", body: JSON.stringify(config) }),
+  updateAgent: (id: string, updates: Partial<AgentConfig>) =>
+    request<{ ok: boolean; error?: string }>(`/agents/${id}`, { method: "PUT", body: JSON.stringify(updates) }),
+  deleteAgent: (id: string) =>
+    request<{ ok: boolean; error?: string }>(`/agents/${id}`, { method: "DELETE" }),
 
   getFamily: () => request<{
     family: { id: string; name: string; avatar?: string; homeCity?: string; homeAdcode?: string } | null;

@@ -9,6 +9,7 @@ import {
   DocumentTextIcon,
   PuzzlePieceIcon,
   CpuChipIcon,
+  RectangleGroupIcon,
   WrenchScrewdriverIcon,
   ShieldCheckIcon,
   ArrowTopRightOnSquareIcon,
@@ -25,6 +26,7 @@ const ChatIcon = createIconWrapper(ChatBubbleLeftEllipsisIcon);
 const LogsIcon = createIconWrapper(DocumentTextIcon);
 const PluginsIcon = createIconWrapper(PuzzlePieceIcon);
 const ModelsIcon = createIconWrapper(CpuChipIcon);
+const AgentsIcon = createIconWrapper(RectangleGroupIcon);
 const ToolsIcon = createIconWrapper(WrenchScrewdriverIcon);
 const StatusIcon = createIconWrapper(ShieldCheckIcon);
 const BoardIcon = createIconWrapper(Squares2X2Icon);
@@ -111,6 +113,11 @@ const NAV_GROUPS = [
         to: "/admin/models",
         label: "模型",
         icon: <ModelsIcon size="md" />,
+      },
+      {
+        to: "/admin/agents",
+        label: "Agent",
+        icon: <AgentsIcon size="md" />,
       },
       {
         to: "/admin/tools",

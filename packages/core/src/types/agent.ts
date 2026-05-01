@@ -1,11 +1,13 @@
-// Agent配置接口，为未来多Agent模式预留
+export type AgentCapability = "vision" | "image_generation";
+
+// Agent配置接口，为多Agent模式提供能力型路由
 export interface AgentConfig {
   id: string;
   name: string;
   description: string;
   modelId: string;         // 绑定的模型ID
   enabled: boolean;
-  specialization?: string; // 专业领域（conversation/analysis/creative等）
+  capabilities: AgentCapability[];
 }
 
 // Agent上下文，用于在运行时指定agent或模型
@@ -22,4 +24,5 @@ export interface AgentManager {
   updateAgent(id: string, updates: Partial<AgentConfig>): void;
   deleteAgent(id: string): void;
   getAgentModelId(agentId: string): string | null;
+  getEnabledAgentByCapability(capability: AgentCapability): AgentConfig | null;
 }

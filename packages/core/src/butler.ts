@@ -1,4 +1,4 @@
-import { createProvider } from "@nichijou/ai";
+import { createImageGenerationService, createProvider } from "@nichijou/ai";
 import type { ChatRequest, LLMProvider, StreamEvent } from "@nichijou/ai";
 import { 
   MultimodalProviderSelector, 
@@ -7,7 +7,7 @@ import {
 } from "@nichijou/ai";
 import { AgentSession, createAgentSession } from "@nichijou/agent";
 import type { AgentEvent } from "@nichijou/agent";
-import { getZonedDateTimeParts } from "@nichijou/shared";
+import { generateId, getZonedDateTimeParts } from "@nichijou/shared";
 import type { 
   FamilyMember, 
   InboundMessage, 
@@ -23,6 +23,7 @@ import type {
   MultimediaConfig
 } from "@nichijou/shared";
 import { hostname, platform, arch, cpus, totalmem, freemem, uptime as osUptime, loadavg } from "node:os";
+import { relative, sep } from "node:path";
 import type { Channel } from "./gateway/channel.js";
 import type { ChannelStatus } from "@nichijou/shared";
 import { StorageManager } from "./storage/storage.js";
@@ -43,9 +44,11 @@ import { PluginHost } from "./plugin-host/plugin-host.js";
 import { resolvePluginImportUrl } from "./plugins/resolve-plugin.js";
 import { ActionExecutor } from "./routine/action-executor.js";
 import { ModelManager } from "./services/model-manager.js";
+import { AgentManager } from "./services/agent-manager.js";
 import { ErrorHandler } from "./services/error-handler.js";
 import { SystemLogger } from "./services/system-logger.js";
-import type { AgentContext } from "./types/agent.js";
+import type { AgentCapability, AgentConfig, AgentContext } from "./types/agent.js";
+import type { LLMModelConfig } from "./storage/config.js";
 
 interface WeChatConnection {
   connectionId: string;
@@ -80,6 +83,7 @@ export class ButlerService {
   readonly pluginHost: PluginHost;
   readonly actionExecutor: ActionExecutor;
   readonly modelManager: ModelManager;
+  readonly agentManager: AgentManager;
   readonly systemLogger: SystemLogger;
 
   private provider: LLMProvider | null = null;
@@ -102,6 +106,7 @@ export class ButlerService {
     this.activityReminderScheduler = new ActivityReminderScheduler(this.db, this.gateway, this.familyManager);
     this.pluginHost = new PluginHost(this.storage);
     this.modelManager = new ModelManager(this.config, (provider) => this.wrapProviderWithLogging(provider));
+    this.agentManager = new AgentManager(this.config);
     this.actionExecutor = new ActionExecutor(
       this.routineEngine, this.familyManager, this.pluginHost,
       this.gateway, null, this.db, this.config,
@@ -419,9 +424,107 @@ export class ButlerService {
         () => this.currentMemberId
       ),
       ...createDownloadTools(this), // 添加下载任务管理工具
+      ...this.createImageGenerationTools(),
       ...this.createDebugTools(), // 添加调试工具
       ...this.pluginHost.getAllTools(),
     ];
+  }
+
+  private getUsableAgentForCapability(
+    capability: AgentCapability,
+  ): { agent: AgentConfig; model: LLMModelConfig } | null {
+    const agent = this.agentManager.getEnabledAgentByCapability(capability);
+    if (!agent) return null;
+    const model = this.modelManager.getModelById(agent.modelId);
+    if (!model?.enabled) return null;
+    return { agent, model };
+  }
+
+  private createImageGenerationTools(): ToolDefinition[] {
+    if (!this.getUsableAgentForCapability("image_generation")) return [];
+
+    return [{
+      name: "generate_image",
+      description: "根据文本提示生成图片，并尽量直接发送给当前用户。适用于用户要求画图、生成图片、生成海报或把想法视觉化的场景。",
+      parameters: {
+        type: "object",
+        properties: {
+          prompt: {
+            type: "string",
+            description: "完整生图提示词。必须包含主体、风格、构图、关键细节和需要避免的歧义。",
+          },
+          size: {
+            type: "string",
+            description: "图片尺寸。默认 1024x1024。",
+            enum: ["1024x1024", "1024x1536", "1536x1024", "auto"],
+          },
+        },
+        required: ["prompt"],
+      },
+      execute: async (params) => this.executeGenerateImageTool(params),
+    }];
+  }
+
+  private async executeGenerateImageTool(params: Record<string, unknown>): Promise<{ content: string; isError?: boolean }> {
+    const prompt = typeof params.prompt === "string" ? params.prompt.trim() : "";
+    if (!prompt) {
+      return { content: "prompt 不能为空", isError: true };
+    }
+
+    const selected = this.getUsableAgentForCapability("image_generation");
+    if (!selected) {
+      return { content: "未配置可用的生图 Agent", isError: true };
+    }
+
+    const size = typeof params.size === "string" && params.size.trim() ? params.size.trim() : "1024x1024";
+    try {
+      const service = createImageGenerationService({
+        baseUrl: selected.model.baseUrl,
+        apiKey: selected.model.apiKey,
+        model: selected.model.model,
+        timeout: selected.model.timeout,
+      });
+      const generated = await service.generate({ prompt, size });
+      const mediaManager = this.storage.getMediaManager(this.db, this.config.getMultimediaConfig());
+      const media = await mediaManager.saveMediaFile(
+        generated.buffer,
+        generated.fileName,
+        generateId("generated-image"),
+      );
+      const mediaUrl = this.toMediaUrl(media.filePath);
+
+      let delivery = "未发送：当前上下文没有成员 ID。";
+      if (this.currentMemberId) {
+        try {
+          await this.gateway.sendMediaToMember(this.currentMemberId, media.filePath, "生成图片");
+          delivery = "已发送给当前用户。";
+        } catch (error) {
+          delivery = `发送失败，已保存为媒体文件：${error instanceof Error ? error.message : String(error)}`;
+        }
+      }
+
+      return {
+        content: [
+          "图片已生成。",
+          `Agent: ${selected.agent.name}`,
+          `提示词: ${prompt}`,
+          `媒体地址: ${mediaUrl}`,
+          delivery,
+        ].join("\n"),
+      };
+    } catch (error) {
+      return {
+        content: error instanceof Error ? error.message : String(error),
+        isError: true,
+      };
+    }
+  }
+
+  private toMediaUrl(filePath: string): string {
+    const mediaRoot = this.storage.resolve("media");
+    const tail = relative(mediaRoot, filePath);
+    if (!tail || tail.startsWith("..")) return filePath;
+    return `/api/media/${tail.split(sep).map(encodeURIComponent).join("/")}`;
   }
 
   private recordAgentEventLog(
@@ -1245,6 +1348,8 @@ ${conversationText}
       ...createMemoryTools(this.storage),
       ...createReminderTools(this.reminderScheduler),
       ...createMessageTools(this.gateway, this.familyManager, this.storage, () => {}),
+      ...createDownloadTools(this),
+      ...this.createImageGenerationTools(),
     ];
     for (const t of coreTools) {
       result.push({ source: "core", name: t.name, description: t.description, parameters: t.parameters });
@@ -1272,6 +1377,8 @@ ${conversationText}
       ...createMemoryTools(this.storage),
       ...createReminderTools(this.reminderScheduler),
       ...createMessageTools(this.gateway, this.familyManager, this.storage, (id: string) => this.clearMemberSession(id)),
+      ...createDownloadTools(this),
+      ...this.createImageGenerationTools(),
     ];
     const tool = coreTools.find((t) => t.name === toolName);
     if (!tool) return { content: `工具 "${toolName}" 不存在`, isError: true };
@@ -1433,6 +1540,9 @@ ${conversationText}
 
     prompt += `# 功能说明\n\n你有以下工具可以使用来帮助家庭成员管理生活。请根据对话自然地调用工具。\n`;
     prompt += `\n重要提示：当需要操作其他家庭成员时，请优先使用 resolve_member 工具通过姓名或昵称查找准确的成员ID。\n`;
+    if (this.getUsableAgentForCapability("image_generation")) {
+      prompt += `当用户明确要求画图、生成图片、制作视觉图或海报时，调用 generate_image 工具，不要只用文字描述图片。\n`;
+    }
 
     prompt += `\n# 消息与提醒使用规则\n\n`;
     prompt += `严格按以下规则选择 send_message 或 create_reminder 工具：\n\n`;
@@ -1934,6 +2044,20 @@ ${conversationText}
     return { context, processedMedia, modelMedia };
   }
 
+  private modelSupportsImageUnderstanding(modelConfig: { provider?: string; baseUrl: string; model: string }): boolean {
+    const provider = modelConfig.provider?.toLowerCase() ?? "";
+    const baseUrl = modelConfig.baseUrl.toLowerCase();
+    const model = modelConfig.model.toLowerCase();
+
+    if (provider === "deepseek" || baseUrl.includes("deepseek.com")) {
+      return false;
+    }
+    if (provider.includes("openai") || baseUrl.includes("api.openai.com")) {
+      return /(^|[-_.])gpt-4o|gpt-4\.1|gpt-4-turbo|o[34](-|$)|vision/.test(model);
+    }
+    return /vision|vl|qwen.*vl|llava|gpt-4o|gpt-4\.1|gpt-4-turbo|gemini|claude-3|o[34](-|$)/.test(model);
+  }
+
   private supportsImageUnderstanding(): boolean {
     const activeModel = this.modelManager.getActiveModel();
     const cfg = activeModel
@@ -1948,17 +2072,41 @@ ${conversationText}
           model: this.config.get().llm.model,
         };
 
-    const provider = cfg.provider?.toLowerCase() ?? "";
-    const baseUrl = cfg.baseUrl.toLowerCase();
-    const model = cfg.model.toLowerCase();
+    return this.modelSupportsImageUnderstanding(cfg);
+  }
 
-    if (provider === "deepseek" || baseUrl.includes("deepseek.com")) {
-      return false;
+  private async describeImagesWithVisionAgent(media: MediaContent[], userText: string): Promise<string | null> {
+    const selected = this.getUsableAgentForCapability("vision");
+    if (!selected || !this.modelSupportsImageUnderstanding(selected.model)) {
+      return null;
     }
-    if (provider.includes("openai") || baseUrl.includes("api.openai.com")) {
-      return /(^|[-_.])gpt-4o|gpt-4\.1|gpt-4-turbo|o[34](-|$)|vision/.test(model);
-    }
-    return /vision|vl|qwen.*vl|llava|gpt-4o|gpt-4\.1|gpt-4-turbo|gemini|claude-3|o[34](-|$)/.test(model);
+
+    const provider = this.getProvider({ agentId: selected.agent.id });
+    const response = await provider.chat({
+      messages: [
+        {
+          role: "system",
+          content: [
+            "你是图片理解子 Agent，只负责理解用户提供的图片。",
+            "请用中文输出结构化图片理解结果，包含：整体描述、关键对象、文字信息、可能的用户意图、需要提醒主 Agent 的限制。",
+            "不要编造图片中不存在的细节；不确定时明确说明。",
+          ].join("\n"),
+        },
+        {
+          role: "user",
+          content: [
+            "请分析这些图片，并给出可直接提供给主 Agent 使用的结果。",
+            "",
+            `用户随图片发送的文字：${userText.trim() || "（无）"}`,
+          ].join("\n"),
+          media,
+        },
+      ],
+      temperature: 0.2,
+      maxTokens: 1200,
+    });
+
+    return response.message.content.trim() || null;
   }
 
   private imageUnsupportedMessage(): string {
@@ -2195,28 +2343,80 @@ ${conversationText}
     const model = this.config.get().llm.model;
 
     if (modelMedia.length > 0 && !this.supportsImageUnderstanding()) {
-      const reply = this.imageUnsupportedMessage();
-      await this.stopTyping(member.id);
-      await this.gateway.sendToMember(member.id, reply);
+      let visionAnalysis: string | null = null;
+      try {
+        visionAnalysis = await this.describeImagesWithVisionAgent(modelMedia, msg.text);
+      } catch (error) {
+        this.systemLogger.logError({
+          source: "Butler.handleMessage",
+          message: "Vision agent image analysis failed",
+          input: { memberId: member.id, mediaCount: modelMedia.length },
+          details: { model },
+          error,
+          traceId,
+        });
+        const reply = `图片理解失败：${error instanceof Error ? error.message : String(error)}`;
+        await this.stopTyping(member.id);
+        await this.gateway.sendToMember(member.id, reply);
+        this.db.saveConversationLogWithMedia(
+          member.id,
+          member.name,
+          msg.text,
+          reply,
+          JSON.stringify([]),
+          msg.mediaContent || [],
+          pipelineProcessed,
+        );
+        this.db.saveChat(member.id, "user", msg.text);
+        this.db.saveChat(member.id, "assistant", reply);
+        return;
+      }
+
+      if (!visionAnalysis) {
+        const reply = this.imageUnsupportedMessage();
+        await this.stopTyping(member.id);
+        await this.gateway.sendToMember(member.id, reply);
+        this.systemLogger.logRuntime({
+          source: "Butler.handleMessage",
+          message: "Image message rejected because no usable vision agent is configured",
+          input: { memberId: member.id, mediaCount: modelMedia.length },
+          details: { model },
+          traceId,
+        });
+        this.db.saveConversationLogWithMedia(
+          member.id,
+          member.name,
+          msg.text,
+          reply,
+          JSON.stringify([]),
+          msg.mediaContent || [],
+          pipelineProcessed,
+        );
+        this.db.saveChat(member.id, "user", msg.text);
+        this.db.saveChat(member.id, "assistant", reply);
+        return;
+      }
+
+      enhancedMessage += `\n\n[图片理解结果]\n${visionAnalysis}`;
+      const analyzedMediaCount = modelMedia.length;
+      for (let index = 0; index < modelMedia.length; index++) {
+        const media = modelMedia[index]!;
+        pipelineProcessed.push({
+          mediaId: media.hash || media.filePath || `media-${index}`,
+          processType: "analysis",
+          result: visionAnalysis,
+          success: true,
+        });
+      }
+      modelMedia = [];
       this.systemLogger.logRuntime({
         source: "Butler.handleMessage",
-        message: "Image message rejected because active model does not support vision",
-        input: { memberId: member.id, mediaCount: modelMedia.length },
+        message: "Image analyzed by vision agent",
+        input: { memberId: member.id, mediaCount: analyzedMediaCount },
+        output: { visionAnalysis },
         details: { model },
         traceId,
       });
-      this.db.saveConversationLogWithMedia(
-        member.id,
-        member.name,
-        msg.text,
-        reply,
-        JSON.stringify([]),
-        msg.mediaContent || [],
-        pipelineProcessed,
-      );
-      this.db.saveChat(member.id, "user", msg.text);
-      this.db.saveChat(member.id, "assistant", reply);
-      return;
     }
 
     const events: Array<{ type: string; data: unknown }> = [];

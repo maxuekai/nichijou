@@ -1,5 +1,13 @@
 export { createProvider } from "./provider.js";
 export { OpenAICompatibleProvider } from "./openai.js";
+export {
+  createImageGenerationService,
+  OpenAICompatibleImageGenerationService,
+  type ImageGenerationConfig,
+  type ImageGenerationRequest,
+  type ImageGenerationResult,
+  type ImageGenerationService,
+} from "./image-generation.js";
 export { 
   MultimodalProviderSelector,
   type MultimodalProviderConfig,

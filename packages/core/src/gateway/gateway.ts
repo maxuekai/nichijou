@@ -83,6 +83,22 @@ export class Gateway {
   }
 
   async sendToMember(memberId: string, text: string): Promise<void> {
+    const channel = this.resolveMemberChannel(memberId);
+    await channel.send(memberId, text);
+  }
+
+  async sendMediaToMember(memberId: string, filePath: string, caption?: string): Promise<void> {
+    const channel = this.resolveMemberChannel(memberId);
+    if (channel.sendMedia) {
+      await channel.sendMedia(memberId, filePath, caption);
+      return;
+    }
+
+    const fallback = [caption, `媒体文件已生成：${filePath}`].filter(Boolean).join("\n");
+    await channel.send(memberId, fallback);
+  }
+
+  private resolveMemberChannel(memberId: string): Channel {
     const member = this.familyManager.getMember(memberId);
     if (!member) throw new Error(`member not found: ${memberId}`);
     const channelId = member.primaryChannel && this.channels.has(member.primaryChannel)
@@ -95,7 +111,7 @@ export class Gateway {
     if (!channel) {
       throw new Error(`channel not registered: ${channelId}`);
     }
-    await channel.send(memberId, text);
+    return channel;
   }
 
   getAllChannelStatuses(): Record<string, ReturnType<Channel["getStatus"]>> {

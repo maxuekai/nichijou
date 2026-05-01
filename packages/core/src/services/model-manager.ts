@@ -295,9 +295,11 @@ export class ModelManager {
    * 为未来agent模式预留：获取指定agent的模型
    */
   getModelForAgent(agentId: string): LLMModelConfig | null {
-    // TODO: 实现agent模型绑定逻辑
-    // 目前返回null，未来会从agent配置中查找绑定的modelId
-    return null;
+    const cfg = this.config.get();
+    const agent = cfg.agents?.find((item) => item.id === agentId && item.enabled);
+    if (!agent) return null;
+    const model = this.getModelById(agent.modelId);
+    return model?.enabled ? model : null;
   }
 
   /**

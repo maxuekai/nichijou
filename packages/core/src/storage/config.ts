@@ -1,6 +1,7 @@
 import yaml from "js-yaml";
 import type { StorageManager } from "./storage.js";
 import type { MultimediaConfig } from "@nichijou/shared";
+import type { AgentCapability, AgentConfig } from "../types/agent.js";
 
 export interface LLMConfig {
   baseUrl: string;
@@ -43,6 +44,8 @@ export interface NichijouConfig {
   llm: LLMConfig;
   // 新增多模型配置
   models?: ModelsConfig;
+  // 能力型 Agent 配置
+  agents?: AgentConfig[];
   // 多媒体处理配置
   multimedia?: MultimediaConfig;
   port: number;
@@ -90,6 +93,8 @@ const DEFAULT_CONFIG: NichijouConfig = {
     },
   },
 };
+
+const VALID_AGENT_CAPABILITIES = new Set<AgentCapability>(["vision", "image_generation"]);
 
 export class ConfigManager {
   private config: NichijouConfig;
@@ -184,6 +189,10 @@ export class ConfigManager {
       this.validateModelsConfig(config.models);
     }
 
+    if (config.agents) {
+      this.validateAgentsConfig(config.agents, config.models);
+    }
+
     if (config.llm.temperature !== undefined) {
       this.validateTemperature(config.llm.temperature, "llm.temperature");
     }
@@ -192,6 +201,32 @@ export class ConfigManager {
   private validateTemperature(temperature: number, label: string): void {
     if (!Number.isFinite(temperature) || temperature < 0 || temperature > 2) {
       throw new Error(`${label} 必须在 0-2 范围内`);
+    }
+  }
+
+  private validateAgentsConfig(agents: AgentConfig[], models?: ModelsConfig): void {
+    const ids = new Set<string>();
+    const modelIds = new Set((models?.models ?? []).map((model) => model.id));
+
+    for (const agent of agents) {
+      if (!agent.id || !agent.name || !agent.modelId) {
+        throw new Error(`Agent 配置不完整: ${agent.id || agent.name || "未知 Agent"}`);
+      }
+      if (ids.has(agent.id)) {
+        throw new Error(`Agent ID 重复: ${agent.id}`);
+      }
+      ids.add(agent.id);
+      if (models && !modelIds.has(agent.modelId)) {
+        throw new Error(`Agent ${agent.id} 绑定的模型不存在: ${agent.modelId}`);
+      }
+      if (!Array.isArray(agent.capabilities) || agent.capabilities.length === 0) {
+        throw new Error(`Agent ${agent.id} 至少需要一个能力标签`);
+      }
+      for (const capability of agent.capabilities) {
+        if (!VALID_AGENT_CAPABILITIES.has(capability)) {
+          throw new Error(`Agent ${agent.id} 包含无效能力: ${capability}`);
+        }
+      }
     }
   }
 

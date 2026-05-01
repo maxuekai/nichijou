@@ -447,6 +447,16 @@ export class WeChatChannel implements Channel {
   }
 
   async send(memberId: string, text: string): Promise<void> {
+    const { client, toUserId, contextToken } = this.resolveSendContext(memberId);
+    await client.sendText(toUserId, text, contextToken);
+  }
+
+  async sendMedia(memberId: string, filePath: string, caption?: string): Promise<void> {
+    const { client, toUserId, contextToken } = this.resolveSendContext(memberId);
+    await client.sendMedia(toUserId, filePath, caption, contextToken);
+  }
+
+  private resolveSendContext(memberId: string): { client: WeChatClient; toUserId: string; contextToken: string } {
     const connId = this.memberIdIndex.get(memberId);
     if (!connId) {
       throw new Error(`成员 ${memberId} 无微信连接`);
@@ -475,7 +485,7 @@ export class WeChatChannel implements Channel {
       );
     }
 
-    await client.sendText(toUserId, text, contextToken);
+    return { client, toUserId, contextToken };
   }
 
   async startTyping(memberId: string): Promise<void> {
