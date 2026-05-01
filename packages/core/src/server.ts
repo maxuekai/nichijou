@@ -55,6 +55,7 @@ const CONFIG_PATCH_KEYS = new Set([
   "llm",
   "models",
   "agents",
+  "mediaUnderstanding",
   "port",
   "timezone",
   "setupCompleted",

@@ -25,4 +25,5 @@ export interface AgentManager {
   deleteAgent(id: string): void;
   getAgentModelId(agentId: string): string | null;
   getEnabledAgentByCapability(capability: AgentCapability): AgentConfig | null;
+  getEnabledAgentsByCapability(capability: AgentCapability): AgentConfig[];
 }

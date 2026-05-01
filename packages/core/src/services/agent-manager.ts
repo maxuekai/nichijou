@@ -68,6 +68,12 @@ export class AgentManager implements AgentManagerContract {
     )) ?? null;
   }
 
+  getEnabledAgentsByCapability(capability: AgentCapability): AgentConfig[] {
+    return this.getAllAgents().filter((agent) => (
+      agent.enabled && agent.capabilities.includes(capability)
+    ));
+  }
+
   private normalizeCapabilities(capabilities: AgentCapability[]): AgentCapability[] {
     return [...new Set(capabilities)];
   }

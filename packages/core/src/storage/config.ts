@@ -39,6 +39,24 @@ export interface WeChatConfig {
   };
 }
 
+export interface MediaUnderstandingImageModelConfig {
+  agentId: string;
+  enabled?: boolean;
+  maxBytes?: number;
+  maxChars?: number;
+  timeoutSeconds?: number;
+}
+
+export interface MediaUnderstandingConfig {
+  image?: {
+    enabled?: boolean;
+    maxBytes?: number;
+    maxChars?: number;
+    timeoutSeconds?: number;
+    models?: MediaUnderstandingImageModelConfig[];
+  };
+}
+
 export interface NichijouConfig {
   // 保留原有 llm 字段用于向后兼容
   llm: LLMConfig;
@@ -48,6 +66,8 @@ export interface NichijouConfig {
   agents?: AgentConfig[];
   // 多媒体处理配置
   multimedia?: MultimediaConfig;
+  // 入站媒体理解配置
+  mediaUnderstanding?: MediaUnderstandingConfig;
   port: number;
   timezone: string;
   setupCompleted: boolean;
@@ -80,6 +100,15 @@ const DEFAULT_CONFIG: NichijouConfig = {
     references: {
       max_thread_depth: 10,
       include_media_in_context: true,
+    },
+  },
+  mediaUnderstanding: {
+    image: {
+      enabled: true,
+      maxBytes: 10 * 1024 * 1024,
+      maxChars: 500,
+      timeoutSeconds: 60,
+      models: [],
     },
   },
   port: 3000,
@@ -193,6 +222,10 @@ export class ConfigManager {
       this.validateAgentsConfig(config.agents, config.models);
     }
 
+    if (config.mediaUnderstanding) {
+      this.validateMediaUnderstandingConfig(config.mediaUnderstanding, config.agents);
+    }
+
     if (config.llm.temperature !== undefined) {
       this.validateTemperature(config.llm.temperature, "llm.temperature");
     }
@@ -226,6 +259,44 @@ export class ConfigManager {
         if (!VALID_AGENT_CAPABILITIES.has(capability)) {
           throw new Error(`Agent ${agent.id} 包含无效能力: ${capability}`);
         }
+      }
+    }
+  }
+
+  private validateMediaUnderstandingConfig(config: MediaUnderstandingConfig, agents?: AgentConfig[]): void {
+    const image = config.image;
+    if (!image) return;
+
+    if (image.maxBytes !== undefined && (!Number.isFinite(image.maxBytes) || image.maxBytes < 1)) {
+      throw new Error("mediaUnderstanding.image.maxBytes 必须大于 0");
+    }
+    if (image.maxChars !== undefined && (!Number.isFinite(image.maxChars) || image.maxChars < 1)) {
+      throw new Error("mediaUnderstanding.image.maxChars 必须大于 0");
+    }
+    if (image.timeoutSeconds !== undefined && (!Number.isFinite(image.timeoutSeconds) || image.timeoutSeconds < 1)) {
+      throw new Error("mediaUnderstanding.image.timeoutSeconds 必须大于 0");
+    }
+
+    const agentsById = new Map((agents ?? []).map((agent) => [agent.id, agent]));
+    for (const model of image.models ?? []) {
+      if (!model.agentId) {
+        throw new Error("mediaUnderstanding.image.models[].agentId 不能为空");
+      }
+      const agent = agentsById.get(model.agentId);
+      if (agents && !agent) {
+        throw new Error(`媒体理解绑定的 Agent 不存在: ${model.agentId}`);
+      }
+      if (agent && !agent.capabilities.includes("vision")) {
+        throw new Error(`媒体理解绑定的 Agent 缺少 vision 能力: ${model.agentId}`);
+      }
+      if (model.maxBytes !== undefined && (!Number.isFinite(model.maxBytes) || model.maxBytes < 1)) {
+        throw new Error(`媒体理解 Agent ${model.agentId} 的 maxBytes 必须大于 0`);
+      }
+      if (model.maxChars !== undefined && (!Number.isFinite(model.maxChars) || model.maxChars < 1)) {
+        throw new Error(`媒体理解 Agent ${model.agentId} 的 maxChars 必须大于 0`);
+      }
+      if (model.timeoutSeconds !== undefined && (!Number.isFinite(model.timeoutSeconds) || model.timeoutSeconds < 1)) {
+        throw new Error(`媒体理解 Agent ${model.agentId} 的 timeoutSeconds 必须大于 0`);
       }
     }
   }

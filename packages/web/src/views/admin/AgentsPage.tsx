@@ -1,7 +1,15 @@
 import { useEffect, useState } from "react";
-import { api, type AgentCapability, type AgentConfig } from "../../api";
+import {
+  api,
+  type AgentCapability,
+  type AgentConfig,
+  type MediaUnderstandingConfig,
+  type MediaUnderstandingImageModelConfig,
+} from "../../api";
 import { Select } from "../../components/ui/Select";
 import {
+  ArrowDownIcon,
+  ArrowUpIcon,
   CheckIcon,
   CpuChipIcon,
   EyeIcon,
@@ -21,6 +29,8 @@ const DeleteIcon = createIconWrapper(TrashIcon);
 const ModelIcon = createIconWrapper(CpuChipIcon);
 const VisionIcon = createIconWrapper(EyeIcon);
 const ImageIcon = createIconWrapper(SparklesIcon);
+const MoveUpIcon = createIconWrapper(ArrowUpIcon);
+const MoveDownIcon = createIconWrapper(ArrowDownIcon);
 
 interface LLMModelSummary {
   id: string;
@@ -31,6 +41,16 @@ interface LLMModelSummary {
 }
 
 type AgentFormData = Omit<AgentConfig, "id">;
+
+type ImageUnderstandingConfig = NonNullable<MediaUnderstandingConfig["image"]>;
+
+const DEFAULT_IMAGE_UNDERSTANDING: Required<ImageUnderstandingConfig> = {
+  enabled: true,
+  maxBytes: 10 * 1024 * 1024,
+  maxChars: 500,
+  timeoutSeconds: 60,
+  models: [],
+};
 
 const CAPABILITY_OPTIONS: Array<{ value: AgentCapability; label: string; description: string }> = [
   { value: "vision", label: "图片理解", description: "自动分析用户发送的图片" },
@@ -55,9 +75,27 @@ function capabilityIcon(capability: AgentCapability) {
   return capability === "vision" ? <VisionIcon size="sm" /> : <ImageIcon size="sm" />;
 }
 
+function normalizeMediaUnderstanding(config?: MediaUnderstandingConfig): MediaUnderstandingConfig {
+  return {
+    ...config,
+    image: {
+      ...DEFAULT_IMAGE_UNDERSTANDING,
+      ...(config?.image ?? {}),
+      models: config?.image?.models ?? [],
+    },
+  };
+}
+
+function optionalPositiveNumber(value: string): number | undefined {
+  if (!value.trim()) return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
 export function AgentsPage() {
   const [agents, setAgents] = useState<AgentConfig[]>([]);
   const [models, setModels] = useState<LLMModelSummary[]>([]);
+  const [mediaUnderstanding, setMediaUnderstanding] = useState<MediaUnderstandingConfig>(() => normalizeMediaUnderstanding());
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [isAdding, setIsAdding] = useState(false);
@@ -65,6 +103,7 @@ export function AgentsPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingAgent, setEditingAgent] = useState<AgentFormData>(() => emptyAgentForm());
   const [saving, setSaving] = useState(false);
+  const [savingMediaUnderstanding, setSavingMediaUnderstanding] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
 
   useEffect(() => {
@@ -74,12 +113,14 @@ export function AgentsPage() {
   async function loadData() {
     setLoadError(null);
     try {
-      const [agentData, modelData] = await Promise.all([
+      const [agentData, modelData, configData] = await Promise.all([
         api.getAgents(),
         api.getModels(),
+        api.getConfig(),
       ]);
       setAgents(agentData.agents);
       setModels(modelData.models);
+      setMediaUnderstanding(normalizeMediaUnderstanding(configData.mediaUnderstanding as MediaUnderstandingConfig | undefined));
       const firstModelId = modelData.models[0]?.id ?? "";
       setNewAgent((prev) => ({ ...prev, modelId: prev.modelId || firstModelId }));
     } catch (error) {
@@ -160,9 +201,80 @@ export function AgentsPage() {
     }
   }
 
+  function updateImageUnderstanding(updates: Partial<ImageUnderstandingConfig>) {
+    setMediaUnderstanding((prev) => ({
+      ...prev,
+      image: {
+        ...DEFAULT_IMAGE_UNDERSTANDING,
+        ...(prev.image ?? {}),
+        ...updates,
+        models: updates.models ?? prev.image?.models ?? [],
+      },
+    }));
+  }
+
+  function updateImageUnderstandingModel(index: number, updates: Partial<MediaUnderstandingImageModelConfig>) {
+    const modelsConfig = mediaUnderstanding.image?.models ?? [];
+    updateImageUnderstanding({
+      models: modelsConfig.map((item, itemIndex) => (
+        itemIndex === index ? { ...item, ...updates } : item
+      )),
+    });
+  }
+
+  function addImageUnderstandingModel() {
+    const modelsConfig = mediaUnderstanding.image?.models ?? [];
+    const usedAgentIds = new Set(modelsConfig.map((item) => item.agentId));
+    const agent = agents.find((item) => item.capabilities.includes("vision") && !usedAgentIds.has(item.id))
+      ?? agents.find((item) => item.capabilities.includes("vision"));
+    if (!agent) return;
+    updateImageUnderstanding({
+      models: [...modelsConfig, { agentId: agent.id, enabled: true }],
+    });
+  }
+
+  function removeImageUnderstandingModel(index: number) {
+    const modelsConfig = mediaUnderstanding.image?.models ?? [];
+    updateImageUnderstanding({
+      models: modelsConfig.filter((_, itemIndex) => itemIndex !== index),
+    });
+  }
+
+  function moveImageUnderstandingModel(index: number, direction: -1 | 1) {
+    const modelsConfig = [...(mediaUnderstanding.image?.models ?? [])];
+    const nextIndex = index + direction;
+    if (nextIndex < 0 || nextIndex >= modelsConfig.length) return;
+    const [item] = modelsConfig.splice(index, 1);
+    if (!item) return;
+    modelsConfig.splice(nextIndex, 0, item);
+    updateImageUnderstanding({ models: modelsConfig });
+  }
+
+  async function handleSaveMediaUnderstanding() {
+    setSavingMediaUnderstanding(true);
+    setActionError(null);
+    try {
+      const normalized = normalizeMediaUnderstanding(mediaUnderstanding);
+      await api.updateConfig({ mediaUnderstanding: normalized });
+      setMediaUnderstanding(normalized);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "保存图片理解链路失败");
+    } finally {
+      setSavingMediaUnderstanding(false);
+    }
+  }
+
   const modelOptions = models.map((model) => ({
     value: model.id,
     label: `${model.name || model.model} · ${model.model}${model.enabled ? "" : "（已禁用）"}`,
+  }));
+
+  const imageUnderstanding = normalizeMediaUnderstanding(mediaUnderstanding).image!;
+  const imageUnderstandingModels = imageUnderstanding.models ?? [];
+  const visionAgents = agents.filter((agent) => agent.capabilities.includes("vision"));
+  const visionAgentOptions = visionAgents.map((agent) => ({
+    value: agent.id,
+    label: `${agent.name}${agent.enabled ? "" : "（已禁用）"}`,
   }));
 
   function renderForm(data: AgentFormData, update: (next: AgentFormData) => void, submitLabel: string, onSubmit: () => void, onCancel: () => void) {
@@ -260,6 +372,196 @@ export function AgentsPage() {
     );
   }
 
+  function renderImageUnderstandingPanel() {
+    return (
+      <div className="bg-white rounded-xl border border-stone-200 p-6">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div>
+            <h2 className="text-lg font-semibold text-stone-800">图片理解链路</h2>
+            <p className="text-sm text-stone-500 mt-1">主模型不支持图片输入时，按这里的顺序调用 vision Agent。</p>
+          </div>
+          <div className="flex items-center gap-3">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={imageUnderstanding.enabled !== false}
+                onChange={(event) => updateImageUnderstanding({ enabled: event.target.checked })}
+                className="w-4 h-4 text-amber-600 border-stone-300 rounded focus:ring-amber-500"
+              />
+              <span className="text-sm text-stone-700">启用</span>
+            </label>
+            <button
+              onClick={() => { void handleSaveMediaUnderstanding(); }}
+              disabled={savingMediaUnderstanding}
+              className="flex items-center gap-2 px-3 py-2 bg-amber-500 text-white rounded-lg hover:bg-amber-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {savingMediaUnderstanding && <div className="w-3 h-3 border border-white border-t-transparent rounded-full animate-spin" />}
+              <SaveIcon size="sm" />
+              保存链路
+            </button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-5">
+          <div>
+            <label className="block text-sm font-medium text-stone-700 mb-2">单图最大字节</label>
+            <input
+              type="number"
+              min={1}
+              value={imageUnderstanding.maxBytes ?? ""}
+              onChange={(event) => updateImageUnderstanding({ maxBytes: optionalPositiveNumber(event.target.value) })}
+              placeholder={String(DEFAULT_IMAGE_UNDERSTANDING.maxBytes)}
+              className="w-full px-3 py-2 rounded-lg border border-stone-300 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-stone-700 mb-2">结果最大字符</label>
+            <input
+              type="number"
+              min={1}
+              value={imageUnderstanding.maxChars ?? ""}
+              onChange={(event) => updateImageUnderstanding({ maxChars: optionalPositiveNumber(event.target.value) })}
+              placeholder={String(DEFAULT_IMAGE_UNDERSTANDING.maxChars)}
+              className="w-full px-3 py-2 rounded-lg border border-stone-300 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-stone-700 mb-2">超时秒数</label>
+            <input
+              type="number"
+              min={1}
+              value={imageUnderstanding.timeoutSeconds ?? ""}
+              onChange={(event) => updateImageUnderstanding({ timeoutSeconds: optionalPositiveNumber(event.target.value) })}
+              placeholder={String(DEFAULT_IMAGE_UNDERSTANDING.timeoutSeconds)}
+              className="w-full px-3 py-2 rounded-lg border border-stone-300 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500"
+            />
+          </div>
+        </div>
+
+        <div className="mt-5 pt-5 border-t border-stone-100">
+          <div className="flex items-center justify-between gap-3 mb-3">
+            <h3 className="text-sm font-semibold text-stone-800">Fallback 顺序</h3>
+            <button
+              onClick={addImageUnderstandingModel}
+              disabled={visionAgents.length === 0}
+              className="flex items-center gap-2 px-3 py-2 text-sm border border-stone-300 text-stone-700 rounded-lg hover:bg-stone-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <AddIcon size="sm" />
+              添加
+            </button>
+          </div>
+
+          {visionAgents.length === 0 ? (
+            <div className="bg-stone-50 border border-stone-200 rounded-lg p-4 text-sm text-stone-500">
+              还没有配置 vision 能力的 Agent。
+            </div>
+          ) : imageUnderstandingModels.length === 0 ? (
+            <div className="bg-stone-50 border border-stone-200 rounded-lg p-4 text-sm text-stone-500">
+              未指定顺序时，将按已启用 vision Agent 的配置顺序尝试。
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {imageUnderstandingModels.map((item, index) => {
+                const agent = agents.find((candidate) => candidate.id === item.agentId);
+                return (
+                  <div key={`${item.agentId}-${index}`} className="rounded-lg border border-stone-200 p-4">
+                    <div className="grid grid-cols-1 lg:grid-cols-[minmax(220px,1fr)_150px_140px_130px_auto] gap-3 items-end">
+                      <div>
+                        <label className="block text-xs font-medium text-stone-500 mb-1">Agent</label>
+                        <Select
+                          value={item.agentId}
+                          onChange={(next) => updateImageUnderstandingModel(index, { agentId: next })}
+                          options={visionAgentOptions}
+                          placeholder="选择 vision Agent"
+                          disabled={visionAgentOptions.length === 0}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-stone-500 mb-1">最大字节</label>
+                        <input
+                          type="number"
+                          min={1}
+                          value={item.maxBytes ?? ""}
+                          onChange={(event) => updateImageUnderstandingModel(index, { maxBytes: optionalPositiveNumber(event.target.value) })}
+                          placeholder="使用全局"
+                          className="w-full px-3 py-2 rounded-lg border border-stone-300 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-stone-500 mb-1">最大字符</label>
+                        <input
+                          type="number"
+                          min={1}
+                          value={item.maxChars ?? ""}
+                          onChange={(event) => updateImageUnderstandingModel(index, { maxChars: optionalPositiveNumber(event.target.value) })}
+                          placeholder="使用全局"
+                          className="w-full px-3 py-2 rounded-lg border border-stone-300 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-stone-500 mb-1">超时秒</label>
+                        <input
+                          type="number"
+                          min={1}
+                          value={item.timeoutSeconds ?? ""}
+                          onChange={(event) => updateImageUnderstandingModel(index, { timeoutSeconds: optionalPositiveNumber(event.target.value) })}
+                          placeholder="使用全局"
+                          className="w-full px-3 py-2 rounded-lg border border-stone-300 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500"
+                        />
+                      </div>
+                      <div className="flex items-center justify-end gap-2">
+                        <button
+                          onClick={() => moveImageUnderstandingModel(index, -1)}
+                          disabled={index === 0}
+                          className="p-2 text-stone-500 hover:text-stone-800 hover:bg-stone-100 rounded-lg disabled:opacity-40 disabled:cursor-not-allowed"
+                          title="上移"
+                        >
+                          <MoveUpIcon size="sm" />
+                        </button>
+                        <button
+                          onClick={() => moveImageUnderstandingModel(index, 1)}
+                          disabled={index === imageUnderstandingModels.length - 1}
+                          className="p-2 text-stone-500 hover:text-stone-800 hover:bg-stone-100 rounded-lg disabled:opacity-40 disabled:cursor-not-allowed"
+                          title="下移"
+                        >
+                          <MoveDownIcon size="sm" />
+                        </button>
+                        <button
+                          onClick={() => removeImageUnderstandingModel(index)}
+                          className="p-2 text-red-600 hover:text-red-800 hover:bg-red-50 rounded-lg"
+                          title="删除"
+                        >
+                          <DeleteIcon size="sm" />
+                        </button>
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-3 mt-3">
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={item.enabled !== false}
+                          onChange={(event) => updateImageUnderstandingModel(index, { enabled: event.target.checked })}
+                          className="w-4 h-4 text-amber-600 border-stone-300 rounded focus:ring-amber-500"
+                        />
+                        <span className="text-sm text-stone-700">启用此项</span>
+                      </label>
+                      {agent && !agent.enabled && (
+                        <span className="text-xs text-red-600">该 Agent 已禁用，运行时会跳过。</span>
+                      )}
+                      {!agent && (
+                        <span className="text-xs text-red-600">该 Agent 不存在，请重新选择。</span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -309,6 +611,8 @@ export function AgentsPage() {
           {renderForm(newAgent, setNewAgent, "添加 Agent", () => { void handleAddAgent(); }, () => setIsAdding(false))}
         </div>
       )}
+
+      {!loadError && models.length > 0 && renderImageUnderstandingPanel()}
 
       {!loadError && agents.length === 0 && !isAdding && models.length > 0 && (
         <div className="bg-stone-50 border border-stone-200 rounded-xl p-8 text-center">

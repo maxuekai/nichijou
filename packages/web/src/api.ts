@@ -13,6 +13,24 @@ export interface AgentConfig {
   capabilities: AgentCapability[];
 }
 
+export interface MediaUnderstandingImageModelConfig {
+  agentId: string;
+  enabled?: boolean;
+  maxBytes?: number;
+  maxChars?: number;
+  timeoutSeconds?: number;
+}
+
+export interface MediaUnderstandingConfig {
+  image?: {
+    enabled?: boolean;
+    maxBytes?: number;
+    maxChars?: number;
+    timeoutSeconds?: number;
+    models?: MediaUnderstandingImageModelConfig[];
+  };
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     headers: { "Content-Type": "application/json" },

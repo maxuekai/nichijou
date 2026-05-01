@@ -48,7 +48,11 @@ import { AgentManager } from "./services/agent-manager.js";
 import { ErrorHandler } from "./services/error-handler.js";
 import { SystemLogger } from "./services/system-logger.js";
 import type { AgentCapability, AgentConfig, AgentContext } from "./types/agent.js";
-import type { LLMModelConfig } from "./storage/config.js";
+import type { LLMModelConfig, MediaUnderstandingImageModelConfig } from "./storage/config.js";
+
+const DEFAULT_MEDIA_UNDERSTANDING_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
+const DEFAULT_MEDIA_UNDERSTANDING_IMAGE_MAX_CHARS = 500;
+const DEFAULT_MEDIA_UNDERSTANDING_IMAGE_TIMEOUT_SECONDS = 60;
 
 interface WeChatConnection {
   connectionId: string;
@@ -2075,40 +2079,154 @@ ${conversationText}
   }
 
   private async describeImagesWithVisionAgent(media: MediaContent[], userText: string): Promise<string | null> {
-    const selected = this.getUsableAgentForCapability("vision");
-    if (!selected) {
+    const imageConfig = this.config.get().mediaUnderstanding?.image;
+    if (imageConfig?.enabled === false) {
       return null;
     }
 
-    const provider = this.getProvider({ agentId: selected.agent.id });
-    const response = await provider.chat({
-      messages: [
-        {
-          role: "system",
-          content: [
-            "你是图片理解子 Agent，只负责理解用户提供的图片。",
-            "请用中文输出结构化图片理解结果，包含：整体描述、关键对象、文字信息、可能的用户意图、需要提醒主 Agent 的限制。",
-            "不要编造图片中不存在的细节；不确定时明确说明。",
-          ].join("\n"),
-        },
-        {
-          role: "user",
-          content: [
-            "请分析这些图片，并给出可直接提供给主 Agent 使用的结果。",
-            "",
-            `用户随图片发送的文字：${userText.trim() || "（无）"}`,
-          ].join("\n"),
-          media,
-        },
-      ],
-      maxTokens: 1200,
-    });
+    const configuredModels = imageConfig?.models;
+    const chain: MediaUnderstandingImageModelConfig[] = configuredModels && configuredModels.length > 0
+      ? configuredModels.filter((item) => item.enabled !== false)
+      : this.agentManager.getEnabledAgentsByCapability("vision").map((agent) => ({ agentId: agent.id }));
 
-    return response.message.content.trim() || null;
+    if (chain.length === 0) {
+      return null;
+    }
+
+    const globalMaxBytes = imageConfig?.maxBytes ?? DEFAULT_MEDIA_UNDERSTANDING_IMAGE_MAX_BYTES;
+    const globalMaxChars = imageConfig?.maxChars ?? DEFAULT_MEDIA_UNDERSTANDING_IMAGE_MAX_CHARS;
+    const globalTimeoutSeconds = imageConfig?.timeoutSeconds ?? DEFAULT_MEDIA_UNDERSTANDING_IMAGE_TIMEOUT_SECONDS;
+    const timeZone = this.config.get().timezone || "Asia/Shanghai";
+    let lastError: Error | null = null;
+
+    for (const entry of chain) {
+      const agent = this.agentManager.getAgent(entry.agentId);
+      if (!agent?.enabled || !agent.capabilities.includes("vision")) {
+        this.systemLogger.logRuntime({
+          level: "warn",
+          source: "Butler.mediaUnderstanding",
+          message: "Skipping unavailable vision agent",
+          details: { agentId: entry.agentId },
+        });
+        continue;
+      }
+
+      const model = this.modelManager.getModelById(agent.modelId);
+      if (!model?.enabled) {
+        this.systemLogger.logRuntime({
+          level: "warn",
+          source: "Butler.mediaUnderstanding",
+          message: "Skipping vision agent because bound model is unavailable",
+          details: { agentId: agent.id, modelId: agent.modelId },
+        });
+        continue;
+      }
+
+      const maxBytes = entry.maxBytes ?? globalMaxBytes;
+      const oversized = media.find((item) => typeof item.size === "number" && item.size > maxBytes);
+      if (oversized) {
+        this.systemLogger.logRuntime({
+          level: "warn",
+          source: "Butler.mediaUnderstanding",
+          message: "Skipping vision agent because image exceeds maxBytes",
+          details: {
+            agentId: agent.id,
+            modelId: model.id,
+            maxBytes,
+            imageSize: oversized.size,
+            imageName: oversized.originalName,
+          },
+        });
+        continue;
+      }
+
+      const maxChars = entry.maxChars ?? globalMaxChars;
+      const timeoutSeconds = entry.timeoutSeconds ?? globalTimeoutSeconds;
+      const provider = this.wrapProviderWithLogging(createProvider({
+        provider: model.provider,
+        baseUrl: model.baseUrl,
+        apiKey: model.apiKey,
+        model: model.model,
+        timeout: timeoutSeconds * 1000,
+        temperature: model.temperature,
+        thinkingMode: model.thinkingMode,
+        supportsVision: true,
+        timeZone,
+      }));
+      const startedAt = Date.now();
+
+      try {
+        this.systemLogger.logRuntime({
+          source: "Butler.mediaUnderstanding",
+          message: "Vision agent image analysis started",
+          input: { mediaCount: media.length, userText },
+          details: { agentId: agent.id, agentName: agent.name, modelId: model.id, model: model.model, maxChars, timeoutSeconds },
+        });
+
+        const response = await provider.chat({
+          messages: [
+            {
+              role: "system",
+              content: [
+                "你是图片理解子 Agent，只负责理解用户提供的图片。",
+                "请用中文输出结构化图片理解结果，包含：整体描述、关键对象、文字信息、可能的用户意图、需要提醒主 Agent 的限制。",
+                `输出控制在 ${maxChars} 个中文字符以内。`,
+                "不要编造图片中不存在的细节；不确定时明确说明。",
+              ].join("\n"),
+            },
+            {
+              role: "user",
+              content: [
+                "请分析这些图片，并给出可直接提供给主 Agent 使用的结果。",
+                "",
+                `用户随图片发送的文字：${userText.trim() || "（无）"}`,
+              ].join("\n"),
+              media,
+            },
+          ],
+          maxTokens: Math.max(256, Math.min(4096, Math.ceil(maxChars * 1.5))),
+        });
+
+        const content = response.message.content.trim();
+        if (!content) {
+          throw new Error("图片理解结果为空");
+        }
+
+        const analysis = this.truncateVisionAnalysis(content, maxChars);
+        this.systemLogger.logRuntime({
+          source: "Butler.mediaUnderstanding",
+          message: "Vision agent image analysis completed",
+          output: { analysis },
+          details: { agentId: agent.id, agentName: agent.name, modelId: model.id, model: model.model },
+          durationMs: Date.now() - startedAt,
+        });
+        return analysis;
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+        this.systemLogger.logError({
+          source: "Butler.mediaUnderstanding",
+          message: "Vision agent image analysis failed, trying next configured agent",
+          input: { mediaCount: media.length, userText },
+          details: { agentId: agent.id, agentName: agent.name, modelId: model.id, model: model.model },
+          error: lastError,
+          durationMs: Date.now() - startedAt,
+        });
+      }
+    }
+
+    if (lastError) {
+      throw new Error(`所有图片理解 Agent 调用失败：${lastError.message}`);
+    }
+    return null;
+  }
+
+  private truncateVisionAnalysis(content: string, maxChars: number): string {
+    if (content.length <= maxChars) return content;
+    return `${content.slice(0, maxChars).trimEnd()}\n（图片理解结果已截断）`;
   }
 
   private imageUnsupportedMessage(): string {
-    return "当前模型不支持图片理解。请在模型设置中切换到支持视觉输入的模型后，再发送图片。";
+    return "当前主模型不支持图片理解，且没有可用的图片理解 Agent。请切换到支持视觉输入的模型，或在 Agent 管理中配置启用 vision 能力的图片理解 Agent。";
   }
 
   private createPromptInput(message: string, modelMedia: MediaContent[]): string | MultimodalMessage {
