@@ -27,16 +27,20 @@ export class ModelManager {
       provider: model.provider,
       baseUrl: this.describeBaseUrl(model.baseUrl),
       model: model.model,
+      temperature: model.temperature,
       enabled: model.enabled,
       isDefault: model.isDefault,
       hasApiKey: Boolean(model.apiKey),
     };
   }
 
-  private describeLegacyConfig(llm: LLMModelConfig | { baseUrl?: string; apiKey?: string; model?: string; thinkingMode?: boolean }): Record<string, unknown> {
+  private describeLegacyConfig(
+    llm: LLMModelConfig | { baseUrl?: string; apiKey?: string; model?: string; temperature?: number; thinkingMode?: boolean },
+  ): Record<string, unknown> {
     return {
       baseUrl: this.describeBaseUrl(llm.baseUrl),
       model: llm.model,
+      temperature: llm.temperature,
       thinkingMode: llm.thinkingMode,
       hasApiKey: Boolean(llm.apiKey),
     };
@@ -127,10 +131,17 @@ export class ModelManager {
       cfg.models.activeModelId = id;
     }
 
+    const sanitizedUpdates = { ...updates } as Partial<LLMModelConfig> & { temperature?: number | null };
+    const currentModel = { ...cfg.models.models[modelIndex] };
+    if (sanitizedUpdates.temperature === null) {
+      delete currentModel.temperature;
+      delete sanitizedUpdates.temperature;
+    }
+
     // 更新模型配置
     cfg.models.models[modelIndex] = {
-      ...cfg.models.models[modelIndex],
-      ...updates,
+      ...currentModel,
+      ...sanitizedUpdates,
       id, // 确保 id 不被覆盖
     };
 
@@ -214,6 +225,7 @@ export class ModelManager {
         apiKey: modelConfig.apiKey,
         model: modelConfig.model,
         timeout: modelConfig.timeout,
+        temperature: modelConfig.temperature,
         thinkingMode: modelConfig.thinkingMode,
         timeZone: this.config.get().timezone,
       }));
@@ -251,6 +263,7 @@ export class ModelManager {
         baseUrl: cfg.llm.baseUrl,
         apiKey: cfg.llm.apiKey,
         model: cfg.llm.model,
+        temperature: cfg.llm.temperature,
         thinkingMode: cfg.llm.thinkingMode ?? false,
         enabled: true,
         isDefault: true,

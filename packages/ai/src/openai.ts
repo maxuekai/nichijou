@@ -430,7 +430,8 @@ export class OpenAICompatibleProvider implements LLMProvider {
     if (deepSeek) {
       body.thinking = { type: thinkingEnabled ? "enabled" : "disabled" };
     }
-    if (request.temperature !== undefined) body.temperature = request.temperature;
+    const temperature = request.temperature ?? this.config.temperature;
+    if (temperature !== undefined) body.temperature = temperature;
     if (request.maxTokens !== undefined) body.max_tokens = request.maxTokens;
     if (request.tools && request.tools.length > 0) {
       body.tools = toOpenAITools(request.tools);

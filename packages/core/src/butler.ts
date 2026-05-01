@@ -196,6 +196,7 @@ export class ButlerService {
           apiKey: model.apiKey,
           model: model.model,
           timeout: model.timeout,
+          temperature: model.temperature,
           thinkingMode: model.thinkingMode,
           timeZone,
         }));
@@ -212,6 +213,7 @@ export class ButlerService {
           apiKey: agentModel.apiKey,
           model: agentModel.model,
           timeout: agentModel.timeout,
+          temperature: agentModel.temperature,
           thinkingMode: agentModel.thinkingMode,
           timeZone,
         }));
@@ -228,6 +230,7 @@ export class ButlerService {
           apiKey: activeModel.apiKey,
           model: activeModel.model,
           timeout: activeModel.timeout,
+          temperature: activeModel.temperature,
           thinkingMode: activeModel.thinkingMode,
           timeZone,
         }));

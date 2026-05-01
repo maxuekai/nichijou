@@ -36,6 +36,7 @@ export const api = {
       apiKey: string;
       model: string;
       timeout?: number;
+      temperature?: number;
       thinkingMode?: boolean;
       enabled: boolean;
       isDefault: boolean;
@@ -51,6 +52,7 @@ export const api = {
     apiKey: string;
     model: string;
     timeout?: number;
+    temperature?: number;
     thinkingMode?: boolean;
     enabled: boolean;
     isDefault: boolean;
@@ -62,6 +64,7 @@ export const api = {
     apiKey: string;
     model: string;
     timeout?: number;
+    temperature?: number | null;
     thinkingMode?: boolean;
     enabled: boolean;
     isDefault: boolean;
@@ -75,6 +78,7 @@ export const api = {
     apiKey: string;
     model: string;
     timeout?: number;
+    temperature?: number;
     thinkingMode?: boolean;
     enabled: boolean;
     isDefault: boolean;

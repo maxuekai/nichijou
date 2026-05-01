@@ -6,6 +6,7 @@ export interface LLMConfig {
   baseUrl: string;
   apiKey: string;
   model: string;
+  temperature?: number;
   thinkingMode?: boolean;
 }
 
@@ -17,6 +18,7 @@ export interface LLMModelConfig {
   apiKey: string;          // API密钥
   model: string;           // 模型名称
   timeout?: number;        // 超时设置
+  temperature?: number;    // 采样温度
   thinkingMode?: boolean;  // 是否启用思考模式；reasoning_content 只读响应，不回传请求历史
   enabled: boolean;        // 是否启用
   isDefault: boolean;      // 是否为默认模型
@@ -128,6 +130,7 @@ export class ConfigManager {
         baseUrl: config.llm.baseUrl,
         apiKey: config.llm.apiKey,
         model: config.llm.model,
+        temperature: config.llm.temperature,
         thinkingMode: config.llm.thinkingMode ?? false,
         enabled: true,
         isDefault: true,
@@ -179,6 +182,16 @@ export class ConfigManager {
     // 验证模型配置
     if (config.models) {
       this.validateModelsConfig(config.models);
+    }
+
+    if (config.llm.temperature !== undefined) {
+      this.validateTemperature(config.llm.temperature, "llm.temperature");
+    }
+  }
+
+  private validateTemperature(temperature: number, label: string): void {
+    if (!Number.isFinite(temperature) || temperature < 0 || temperature > 2) {
+      throw new Error(`${label} 必须在 0-2 范围内`);
     }
   }
 
@@ -243,6 +256,10 @@ export class ConfigManager {
         new URL(model.baseUrl);
       } catch {
         throw new Error(`无效的 baseUrl: ${model.baseUrl}`);
+      }
+
+      if (model.temperature !== undefined) {
+        this.validateTemperature(model.temperature, `模型 ${model.id} 的 temperature`);
       }
     }
   }

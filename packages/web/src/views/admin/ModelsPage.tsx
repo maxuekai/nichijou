@@ -35,11 +35,37 @@ interface LLMModelConfig {
   apiKey: string;
   model: string;
   timeout?: number;
+  temperature?: number;
   thinkingMode?: boolean;
   enabled: boolean;
   isDefault: boolean;
   createdAt: string;
   lastUsedAt?: string;
+}
+
+type ModelFormData = Omit<LLMModelConfig, "id" | "createdAt" | "lastUsedAt">;
+
+const DEFAULT_TIMEOUT = 30000;
+
+function createEmptyModelData(): ModelFormData {
+  return {
+    name: "",
+    provider: "",
+    baseUrl: "",
+    apiKey: "",
+    model: "",
+    timeout: DEFAULT_TIMEOUT,
+    temperature: undefined,
+    thinkingMode: false,
+    enabled: true,
+    isDefault: false,
+  };
+}
+
+function parseOptionalNumberInput(value: string): number | undefined {
+  if (value.trim() === "") return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 // 模型预设
@@ -122,17 +148,7 @@ export function ModelsPage() {
 
   // 添加模型相关状态
   const [isAddingModel, setIsAddingModel] = useState(false);
-  const [newModelData, setNewModelData] = useState({
-    name: "",
-    provider: "",
-    baseUrl: "",
-    apiKey: "",
-    model: "",
-    timeout: 30000,
-    thinkingMode: false,
-    enabled: true,
-    isDefault: false,
-  });
+  const [newModelData, setNewModelData] = useState<ModelFormData>(() => createEmptyModelData());
   const [selectedPreset, setSelectedPreset] = useState<string>("");
 
   // 编辑模型相关状态
@@ -200,17 +216,7 @@ export function ModelsPage() {
       await api.addModel(newModelData);
       await loadModels();
       setIsAddingModel(false);
-      setNewModelData({
-        name: "",
-        provider: "",
-        baseUrl: "",
-        apiKey: "",
-        model: "",
-        timeout: 30000,
-        thinkingMode: false,
-        enabled: true,
-        isDefault: false,
-      });
+      setNewModelData(createEmptyModelData());
       setSelectedPreset("");
     } catch (e) {
       setActionError(e instanceof Error ? e.message : "添加模型失败");
@@ -230,9 +236,12 @@ export function ModelsPage() {
     setActionError(null);
     try {
       // 处理 API key：如果是 "***" 或为空，则不更新此字段
-      const updateData = { ...editingData };
+      const updateData = { ...editingData } as Partial<LLMModelConfig> & { temperature?: number | null };
       if (!updateData.apiKey || updateData.apiKey === "***") {
         delete updateData.apiKey;
+      }
+      if (Object.prototype.hasOwnProperty.call(editingData, "temperature") && editingData.temperature === undefined) {
+        updateData.temperature = null;
       }
       
       await api.updateModel(editingModelId, updateData);
@@ -297,17 +306,7 @@ export function ModelsPage() {
 
   function cancelAdd() {
     setIsAddingModel(false);
-    setNewModelData({
-      name: "",
-      provider: "",
-      baseUrl: "",
-      apiKey: "",
-      model: "",
-      timeout: 30000,
-      thinkingMode: false,
-      enabled: true,
-      isDefault: false,
-    });
+    setNewModelData(createEmptyModelData());
     setSelectedPreset("");
     setActionError(null);
   }
@@ -423,7 +422,7 @@ export function ModelsPage() {
               />
             </div>
 
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div>
                 <label className="block text-sm font-medium text-stone-700 mb-2">模型名称</label>
                 <input
@@ -442,6 +441,19 @@ export function ModelsPage() {
                   onChange={(e) => setNewModelData(prev => ({ ...prev, timeout: parseInt(e.target.value) || 30000 }))}
                   className="w-full px-3 py-2 rounded-lg border border-stone-300 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500"
                   placeholder="30000"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-stone-700 mb-2">Temperature</label>
+                <input
+                  type="number"
+                  min="0"
+                  max="2"
+                  step="0.1"
+                  value={newModelData.temperature ?? ""}
+                  onChange={(e) => setNewModelData(prev => ({ ...prev, temperature: parseOptionalNumberInput(e.target.value) }))}
+                  className="w-full px-3 py-2 rounded-lg border border-stone-300 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500"
+                  placeholder="默认"
                 />
               </div>
             </div>
@@ -577,7 +589,7 @@ export function ModelsPage() {
                         </div>
                       </div>
 
-                      <div className="grid grid-cols-4 gap-4">
+                      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
                         <div>
                           <h4 className="text-xs font-medium text-stone-500 mb-1">模型名称</h4>
                           <p className="text-sm text-stone-800 font-mono bg-stone-100 px-2 py-1 rounded">{model.model}</p>
@@ -586,6 +598,12 @@ export function ModelsPage() {
                           <h4 className="text-xs font-medium text-stone-500 mb-1">超时时间</h4>
                           <p className="text-sm text-stone-800 bg-stone-100 px-2 py-1 rounded">
                             {model.timeout ? `${model.timeout}ms` : "默认"}
+                          </p>
+                        </div>
+                        <div>
+                          <h4 className="text-xs font-medium text-stone-500 mb-1">Temperature</h4>
+                          <p className="text-sm text-stone-800 bg-stone-100 px-2 py-1 rounded">
+                            {model.temperature !== undefined ? model.temperature : "默认"}
                           </p>
                         </div>
                         <div>
@@ -723,7 +741,7 @@ export function ModelsPage() {
                         />
                       </div>
 
-                      <div className="grid grid-cols-2 gap-4">
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                         <div>
                           <label className="block text-sm font-medium text-stone-700 mb-2">模型名称</label>
                           <input
@@ -739,6 +757,19 @@ export function ModelsPage() {
                             type="number"
                             value={editingData.timeout || ""}
                             onChange={(e) => setEditingData(prev => ({ ...prev, timeout: parseInt(e.target.value) || undefined }))}
+                            className="w-full px-3 py-2 rounded-lg border border-stone-300 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-stone-700 mb-2">Temperature</label>
+                          <input
+                            type="number"
+                            min="0"
+                            max="2"
+                            step="0.1"
+                            value={editingData.temperature ?? ""}
+                            onChange={(e) => setEditingData(prev => ({ ...prev, temperature: parseOptionalNumberInput(e.target.value) }))}
+                            placeholder="默认"
                             className="w-full px-3 py-2 rounded-lg border border-stone-300 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500"
                           />
                         </div>

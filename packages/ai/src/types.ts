@@ -6,6 +6,7 @@ export interface ProviderConfig {
   apiKey: string;
   model: string;
   timeout?: number;
+  temperature?: number;
   thinkingMode?: boolean;
   timeZone?: string;
 }
