@@ -5,6 +5,7 @@ import {
   MessageType,
   UploadMediaType,
   aesEcbPaddedSize,
+  encryptAesEcb,
   uploadBufferToCdn,
 } from "wechat-ilink-client";
 import type { WeixinMessage } from "wechat-ilink-client";
@@ -20,6 +21,25 @@ import type { Database } from "@nichijou/core";
 import type { MemberConnection, WeChatCredentials, WeChatAccount } from "./types.js";
 import { MultimediaMessageParser } from "./multimedia-parser.js";
 import type { DownloadProgress, DownloadTask } from "@nichijou/core";
+
+type UploadUrlResponseWithFullUrl = {
+  upload_param?: string;
+  upload_full_url?: string;
+  thumb_upload_param?: string;
+  thumb_upload_full_url?: string;
+};
+
+type UploadedImageInfo = {
+  downloadEncryptedQueryParam: string;
+  thumbDownloadEncryptedQueryParam?: string;
+  aeskeyHex: string;
+  fileSize: number;
+  fileSizeCiphertext: number;
+  thumbSize?: number;
+  thumbSizeCiphertext?: number;
+};
+
+const CDN_UPLOAD_MAX_RETRIES = 3;
 
 /**
  * WeChat Channel using iLink Bot API via wechat-ilink-client.
@@ -543,22 +563,40 @@ export class WeChatChannel implements Channel {
   ): Promise<void> {
     const uploaded = await this.uploadImageWithThumbnail(client, toUserId, filePath);
     const aesKeyBase64 = Buffer.from(uploaded.aeskeyHex, "hex").toString("base64");
+    const imageItem: {
+      media: {
+        encrypt_query_param: string;
+        aes_key: string;
+        encrypt_type: number;
+      };
+      thumb_media?: {
+        encrypt_query_param: string;
+        aes_key: string;
+        encrypt_type: number;
+      };
+      mid_size: number;
+      thumb_size?: number;
+    } = {
+      media: {
+        encrypt_query_param: uploaded.downloadEncryptedQueryParam,
+        aes_key: aesKeyBase64,
+        encrypt_type: 1,
+      },
+      mid_size: uploaded.fileSizeCiphertext,
+    };
+
+    if (uploaded.thumbDownloadEncryptedQueryParam && uploaded.thumbSizeCiphertext !== undefined) {
+      imageItem.thumb_media = {
+        encrypt_query_param: uploaded.thumbDownloadEncryptedQueryParam,
+        aes_key: aesKeyBase64,
+        encrypt_type: 1,
+      };
+      imageItem.thumb_size = uploaded.thumbSizeCiphertext;
+    }
+
     const item = {
       type: MessageItemType.IMAGE,
-      image_item: {
-        media: {
-          encrypt_query_param: uploaded.downloadEncryptedQueryParam,
-          aes_key: aesKeyBase64,
-          encrypt_type: 1,
-        },
-        thumb_media: {
-          encrypt_query_param: uploaded.thumbDownloadEncryptedQueryParam,
-          aes_key: aesKeyBase64,
-          encrypt_type: 1,
-        },
-        mid_size: uploaded.fileSizeCiphertext,
-        thumb_size: uploaded.thumbSizeCiphertext,
-      },
+      image_item: imageItem,
     };
 
     if (caption) {
@@ -582,22 +620,11 @@ export class WeChatChannel implements Channel {
     client: WeChatClient,
     toUserId: string,
     filePath: string,
-  ): Promise<{
-    downloadEncryptedQueryParam: string;
-    thumbDownloadEncryptedQueryParam: string;
-    aeskeyHex: string;
-    fileSize: number;
-    fileSizeCiphertext: number;
-    thumbSize: number;
-    thumbSizeCiphertext: number;
-  }> {
+  ): Promise<UploadedImageInfo> {
     const plaintext = await readFile(filePath);
     const rawsize = plaintext.length;
     const rawfilemd5 = createHash("md5").update(plaintext).digest("hex");
     const filesize = aesEcbPaddedSize(rawsize);
-    const thumbRawsize = rawsize;
-    const thumbRawfilemd5 = rawfilemd5;
-    const thumbFilesize = filesize;
     const filekey = randomBytes(16).toString("hex");
     const aeskey = randomBytes(16);
     const uploadUrlResp = await client.api.getUploadUrl({
@@ -607,42 +634,116 @@ export class WeChatChannel implements Channel {
       rawsize,
       rawfilemd5,
       filesize,
-      thumb_rawsize: thumbRawsize,
-      thumb_rawfilemd5: thumbRawfilemd5,
-      thumb_filesize: thumbFilesize,
+      no_need_thumb: true,
       aeskey: aeskey.toString("hex"),
-    });
+    }) as UploadUrlResponseWithFullUrl;
 
-    if (!uploadUrlResp.upload_param || !uploadUrlResp.thumb_upload_param) {
-      throw new Error(`getUploadUrl returned incomplete image upload params: ${JSON.stringify(uploadUrlResp)}`);
+    if (!uploadUrlResp.upload_full_url && !uploadUrlResp.upload_param) {
+      throw new Error(`getUploadUrl returned no usable image upload URL: ${JSON.stringify(uploadUrlResp)}`);
     }
 
-    const [uploaded, uploadedThumb] = await Promise.all([
-      uploadBufferToCdn({
-        buf: plaintext,
-        uploadParam: uploadUrlResp.upload_param,
-        filekey,
-        cdnBaseUrl: client.api.cdnBaseUrl,
-        aeskey,
-      }),
-      uploadBufferToCdn({
-        buf: plaintext,
+    const uploaded = await this.uploadImageBuffer({
+      plaintext,
+      uploadFullUrl: uploadUrlResp.upload_full_url,
+      uploadParam: uploadUrlResp.upload_param,
+      filekey,
+      cdnBaseUrl: client.api.cdnBaseUrl,
+      aeskey,
+    });
+
+    let uploadedThumb: { downloadParam: string } | undefined;
+    if (uploadUrlResp.thumb_upload_full_url || uploadUrlResp.thumb_upload_param) {
+      uploadedThumb = await this.uploadImageBuffer({
+        plaintext,
+        uploadFullUrl: uploadUrlResp.thumb_upload_full_url,
         uploadParam: uploadUrlResp.thumb_upload_param,
         filekey,
         cdnBaseUrl: client.api.cdnBaseUrl,
         aeskey,
-      }),
-    ]);
+      });
+    }
 
     return {
       downloadEncryptedQueryParam: uploaded.downloadParam,
-      thumbDownloadEncryptedQueryParam: uploadedThumb.downloadParam,
+      thumbDownloadEncryptedQueryParam: uploadedThumb?.downloadParam,
       aeskeyHex: aeskey.toString("hex"),
       fileSize: rawsize,
       fileSizeCiphertext: filesize,
-      thumbSize: thumbRawsize,
-      thumbSizeCiphertext: thumbFilesize,
+      thumbSize: uploadedThumb ? rawsize : undefined,
+      thumbSizeCiphertext: uploadedThumb ? filesize : undefined,
     };
+  }
+
+  private async uploadImageBuffer(params: {
+    plaintext: Buffer;
+    uploadFullUrl?: string;
+    uploadParam?: string;
+    filekey: string;
+    cdnBaseUrl: string;
+    aeskey: Buffer;
+  }): Promise<{ downloadParam: string }> {
+    const { plaintext, uploadFullUrl, uploadParam, filekey, cdnBaseUrl, aeskey } = params;
+    if (uploadFullUrl) {
+      return this.uploadEncryptedBufferToUrl(uploadFullUrl, plaintext, aeskey);
+    }
+    if (uploadParam) {
+      return uploadBufferToCdn({
+        buf: plaintext,
+        uploadParam,
+        filekey,
+        cdnBaseUrl,
+        aeskey,
+      });
+    }
+    throw new Error("No image upload target returned by getUploadUrl");
+  }
+
+  private async uploadEncryptedBufferToUrl(
+    uploadUrl: string,
+    plaintext: Buffer,
+    aeskey: Buffer,
+  ): Promise<{ downloadParam: string }> {
+    const ciphertext = encryptAesEcb(plaintext, aeskey);
+    let lastError: unknown;
+
+    for (let attempt = 1; attempt <= CDN_UPLOAD_MAX_RETRIES; attempt++) {
+      try {
+        const res = await fetch(uploadUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/octet-stream" },
+          body: new Uint8Array(ciphertext),
+        });
+
+        if (res.status >= 400 && res.status < 500) {
+          const errMsg = res.headers.get("x-error-message") ?? await res.text();
+          throw new Error(`CDN upload client error ${res.status}: ${errMsg}`);
+        }
+
+        if (res.status !== 200) {
+          const errMsg = res.headers.get("x-error-message") ?? `status ${res.status}`;
+          throw new Error(`CDN upload server error: ${errMsg}`);
+        }
+
+        const downloadParam = res.headers.get("x-encrypted-param") ?? undefined;
+        if (!downloadParam) {
+          throw new Error("CDN upload response missing x-encrypted-param header");
+        }
+
+        return { downloadParam };
+      } catch (err) {
+        lastError = err;
+        if (err instanceof Error && err.message.includes("client error")) {
+          throw err;
+        }
+        if (attempt >= CDN_UPLOAD_MAX_RETRIES) {
+          break;
+        }
+      }
+    }
+
+    throw lastError instanceof Error
+      ? lastError
+      : new Error(`CDN upload failed after ${CDN_UPLOAD_MAX_RETRIES} attempts`);
   }
 
   private describeError(error: unknown): string {
