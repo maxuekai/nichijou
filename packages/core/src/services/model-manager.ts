@@ -233,7 +233,7 @@ export class ModelManager {
       // 发送一个简单的测试消息
       const response = await provider.chat({
         messages: [{ role: "user", content: "Hello, this is a connection test. Please respond with 'OK'." }],
-        temperature: 0.1,
+        temperature: modelConfig.temperature ?? 0.1,
         maxTokens: 10
       });
 
