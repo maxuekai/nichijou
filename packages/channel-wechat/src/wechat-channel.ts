@@ -1,8 +1,17 @@
-import { WeChatClient, MessageType } from "wechat-ilink-client";
+import {
+  WeChatClient,
+  MessageItemType,
+  MessageState,
+  MessageType,
+  UploadMediaType,
+  aesEcbPaddedSize,
+  uploadBufferToCdn,
+} from "wechat-ilink-client";
 import type { WeixinMessage } from "wechat-ilink-client";
 import type { ChannelStatus, MultimediaConfig } from "@nichijou/shared";
 import { generateId } from "@nichijou/shared";
-import { access, copyFile, mkdir } from "node:fs/promises";
+import { createHash, randomBytes } from "node:crypto";
+import { access, copyFile, mkdir, readFile } from "node:fs/promises";
 import { extname, join } from "node:path";
 import type { Channel } from "@nichijou/core";
 import type { Gateway } from "@nichijou/core";
@@ -458,11 +467,33 @@ export class WeChatChannel implements Channel {
     const sendPath = await this.prepareMediaPathForSend(filePath);
     try {
       console.log(`[WeChat] 发送媒体给成员 ${memberId}: ${sendPath}`);
-      await client.sendMedia(toUserId, sendPath, caption, contextToken);
+      if (this.isImagePath(sendPath)) {
+        await this.sendImageWithThumbnail(client, toUserId, sendPath, contextToken, caption);
+      } else {
+        await client.sendMedia(toUserId, sendPath, caption, contextToken);
+      }
       console.log(`[WeChat] 媒体发送成功: ${sendPath}`);
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = this.describeError(error);
       console.error(`[WeChat] 媒体发送失败 (${sendPath}): ${message}`);
+
+      if (caption) {
+        try {
+          console.log(`[WeChat] 带说明发送失败，重试仅发送媒体: ${sendPath}`);
+          if (this.isImagePath(sendPath)) {
+            await this.sendImageWithThumbnail(client, toUserId, sendPath, contextToken);
+          } else {
+            await client.sendMedia(toUserId, sendPath, undefined, contextToken);
+          }
+          console.log(`[WeChat] 媒体重试发送成功: ${sendPath}`);
+          return;
+        } catch (retryError) {
+          const retryMessage = this.describeError(retryError);
+          console.error(`[WeChat] 媒体重试发送失败 (${sendPath}): ${retryMessage}`);
+          throw new Error(`微信媒体发送失败: ${message}; 重试失败: ${retryMessage}`);
+        }
+      }
+
       throw new Error(`微信媒体发送失败: ${message}`);
     }
   }
@@ -497,6 +528,134 @@ export class WeChatChannel implements Channel {
       return ".gif";
     }
     return ".bin";
+  }
+
+  private isImagePath(filePath: string): boolean {
+    return [".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"].includes(extname(filePath).toLowerCase());
+  }
+
+  private async sendImageWithThumbnail(
+    client: WeChatClient,
+    toUserId: string,
+    filePath: string,
+    contextToken: string,
+    caption?: string,
+  ): Promise<void> {
+    const uploaded = await this.uploadImageWithThumbnail(client, toUserId, filePath);
+    const aesKeyBase64 = Buffer.from(uploaded.aeskeyHex, "hex").toString("base64");
+    const item = {
+      type: MessageItemType.IMAGE,
+      image_item: {
+        media: {
+          encrypt_query_param: uploaded.downloadEncryptedQueryParam,
+          aes_key: aesKeyBase64,
+          encrypt_type: 1,
+        },
+        thumb_media: {
+          encrypt_query_param: uploaded.thumbDownloadEncryptedQueryParam,
+          aes_key: aesKeyBase64,
+          encrypt_type: 1,
+        },
+        mid_size: uploaded.fileSizeCiphertext,
+        thumb_size: uploaded.thumbSizeCiphertext,
+      },
+    };
+
+    if (caption) {
+      await client.sendText(toUserId, caption, contextToken);
+    }
+
+    await client.api.sendMessage({
+      msg: {
+        from_user_id: "",
+        to_user_id: toUserId,
+        client_id: generateId("wechat-ilink"),
+        message_type: MessageType.BOT,
+        message_state: MessageState.FINISH,
+        item_list: [item],
+        context_token: contextToken,
+      },
+    });
+  }
+
+  private async uploadImageWithThumbnail(
+    client: WeChatClient,
+    toUserId: string,
+    filePath: string,
+  ): Promise<{
+    downloadEncryptedQueryParam: string;
+    thumbDownloadEncryptedQueryParam: string;
+    aeskeyHex: string;
+    fileSize: number;
+    fileSizeCiphertext: number;
+    thumbSize: number;
+    thumbSizeCiphertext: number;
+  }> {
+    const plaintext = await readFile(filePath);
+    const rawsize = plaintext.length;
+    const rawfilemd5 = createHash("md5").update(plaintext).digest("hex");
+    const filesize = aesEcbPaddedSize(rawsize);
+    const thumbRawsize = rawsize;
+    const thumbRawfilemd5 = rawfilemd5;
+    const thumbFilesize = filesize;
+    const filekey = randomBytes(16).toString("hex");
+    const aeskey = randomBytes(16);
+    const uploadUrlResp = await client.api.getUploadUrl({
+      filekey,
+      media_type: UploadMediaType.IMAGE,
+      to_user_id: toUserId,
+      rawsize,
+      rawfilemd5,
+      filesize,
+      thumb_rawsize: thumbRawsize,
+      thumb_rawfilemd5: thumbRawfilemd5,
+      thumb_filesize: thumbFilesize,
+      aeskey: aeskey.toString("hex"),
+    });
+
+    if (!uploadUrlResp.upload_param || !uploadUrlResp.thumb_upload_param) {
+      throw new Error(`getUploadUrl returned incomplete image upload params: ${JSON.stringify(uploadUrlResp)}`);
+    }
+
+    const [uploaded, uploadedThumb] = await Promise.all([
+      uploadBufferToCdn({
+        buf: plaintext,
+        uploadParam: uploadUrlResp.upload_param,
+        filekey,
+        cdnBaseUrl: client.api.cdnBaseUrl,
+        aeskey,
+      }),
+      uploadBufferToCdn({
+        buf: plaintext,
+        uploadParam: uploadUrlResp.thumb_upload_param,
+        filekey,
+        cdnBaseUrl: client.api.cdnBaseUrl,
+        aeskey,
+      }),
+    ]);
+
+    return {
+      downloadEncryptedQueryParam: uploaded.downloadParam,
+      thumbDownloadEncryptedQueryParam: uploadedThumb.downloadParam,
+      aeskeyHex: aeskey.toString("hex"),
+      fileSize: rawsize,
+      fileSizeCiphertext: filesize,
+      thumbSize: thumbRawsize,
+      thumbSizeCiphertext: thumbFilesize,
+    };
+  }
+
+  private describeError(error: unknown): string {
+    if (!(error instanceof Error)) {
+      return String(error);
+    }
+
+    const cause = error.cause instanceof Error
+      ? error.cause.message
+      : error.cause
+        ? String(error.cause)
+        : "";
+    return cause ? `${error.message}; cause: ${cause}` : error.message;
   }
 
   private resolveSendContext(memberId: string): { client: WeChatClient; toUserId: string; contextToken: string } {

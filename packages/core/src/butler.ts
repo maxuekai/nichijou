@@ -1579,6 +1579,9 @@ ${conversationText}
 
     prompt += `\n# 消息与提醒使用规则\n\n`;
     prompt += `严格按以下规则选择 send_message 或 create_reminder 工具：\n\n`;
+    prompt += `## send_local_image 工具使用场景：\n`;
+    prompt += `- 用户明确要求发送某个本地图片路径、file:// 路径、media/... 或 /api/media/... 图片 → 使用 send_local_image\n`;
+    prompt += `- 用户未指定目标成员时，默认发送给当前对话成员\n\n`;
     prompt += `## send_message 工具使用场景：\n`;
     prompt += `- 立即发送给其他家庭成员 → 使用 send_message\n`;
     prompt += `- 关键词：「现在告诉XX」「马上发给XX」「立即通知XX」「告诉他」\n`;
